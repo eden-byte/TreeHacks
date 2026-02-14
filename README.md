@@ -12,4 +12,5 @@ Usage note
 
 - Detections returned by `process_detections(...)` now include `distance_m` (approx meters) and `in_path` (boolean).
 - Audio-related packages have been removed from `requirements.txt`; audio is implemented as a no-op stub in `src/audio_feedback.py` to keep the API.
+- Tested with `opencv-python==4.10.0` (recommended).
 
