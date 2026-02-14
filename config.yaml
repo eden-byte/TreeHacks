@@ -3,6 +3,7 @@
 # Model Settings
 model:
   weights: 'yolov5n.pt'  # Nano model for fast testing
+  device: 'auto'         # 'auto' | 'cpu' | 'cuda' (set to 'cuda' on Jetson)
   confidence_threshold: 0.4  # Lowered to detect more objects
   iou_threshold: 0.45
   img_size: 640

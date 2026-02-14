@@ -14,3 +14,15 @@ Usage note
 - Audio-related packages have been removed from `requirements.txt`; audio is implemented as a no-op stub in `src/audio_feedback.py` to keep the API.
 - Tested with `opencv-python==4.10.0` (recommended).
 
+## Jetson / GPU acceleration ⚡
+
+- The code now auto-selects `cuda` when available; set `model.device` in `config.yaml` to `auto` (default) or `cuda` to force GPU.
+- Depth inference (ONNXRuntime) already prefers `CUDAExecutionProvider` when installed.
+- Recommended Jetson steps:
+  1. Install a Jetson-compatible PyTorch wheel (follow NVIDIA Jetson PyTorch instructions).
+  2. Install JetPack / TensorRT and (optionally) `onnxruntime-gpu` for faster depth inference.
+  3. Set `model.device: 'cuda'` in `config.yaml` or leave as `auto`.
+  4. For maximum throughput export the YOLO model to TensorRT and enable `tensorrt.enabled: true` in `config.yaml`.
+
+If you want, I can add an automated TensorRT-export helper and a `requirements-jetson.md` with exact package commands.
+

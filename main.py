@@ -46,17 +46,38 @@ class BlindNavigationSystem:
         self.start_time = time.time()
         
     def load_model(self):
-        """Load YOLOv5 model"""
-        weights = self.config['model']['weights']
-        
+        """Load YOLOv5 model and move to GPU when available / configured."""
+        weights = self.config['model'].get('weights')
+
+        # device selection: config['model'].device supports 'auto'|'cpu'|'cuda'|'cuda:0' etc.
+        cfg_device = self.config.get('model', {}).get('device', 'auto')
+        if cfg_device == 'auto':
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            device = cfg_device
+        self.device = device
+        print(f"Model device: {device}")
+
         try:
             from ultralytics import YOLO
             model = YOLO(weights)
-            print(f"Loaded {weights} successfully")
-        except ImportError:
+            # try to move the model to the selected device; if the wrapper doesn't support .to(),
+            # we'll pass the device at inference time instead.
+            try:
+                if device != 'cpu':
+                    model.to(device)
+                    print(f"Moved YOLO model -> {device}")
+            except Exception as ex:
+                print(f"Warning: could not .to({device}) the YOLO wrapper: {ex}. Will pass device on inference.")
+        except Exception:
+            # fallback: older torch.hub loader (still attempt to move to device)
             model = torch.hub.load('ultralytics/yolov5', 'custom', path=weights)
-            print(f"Loaded {weights} via torch.hub")
-        
+            try:
+                model.to(device)
+                print(f"Moved torch-hub model -> {device}")
+            except Exception:
+                print("Warning: failed to move torch-hub model to device; continuing (inference may run on CPU)")
+
         return model
     
     def init_camera(self):
@@ -377,7 +398,8 @@ class BlindNavigationSystem:
                             print(f"Depth inference failed: {e}")
                             self.depth_map = None
 
-                results = self.model(frame, 
+                results = self.model(frame,
+                                   device=getattr(self, 'device', 'cpu'),
                                    conf=self.config['model']['confidence_threshold'],
                                    iou=self.config['model']['iou_threshold'],
                                    imgsz=self.config['model']['img_size'])
