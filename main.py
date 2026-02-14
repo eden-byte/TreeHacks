@@ -15,6 +15,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import chromadb
 import face_recognition
+from pyzbar.pyzbar import decode as decode_barcodes
 
 load_dotenv(override=True)
 
@@ -29,14 +30,19 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Text-to-Speech — dedicated thread so it never blocks anything
 # ---------------------------------------------------------------------------
 speech_queue = queue.Queue()
+current_tts_process = None
+tts_process_lock = threading.Lock()
 
 def tts_worker():
     """Dedicated thread that processes speech requests one by one."""
+    global current_tts_process
     while True:
         text = speech_queue.get()
+        if text is None:
+            continue
         print(f"[SPEAKING] {text}")
         safe = text.replace("'", "''")
-        subprocess.run(
+        proc = subprocess.Popen(
             ["powershell", "-Command",
              f"Add-Type -AssemblyName System.Speech; "
              f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
@@ -44,10 +50,106 @@ def tts_worker():
              f"$s.Rate = 1; $s.Speak('{safe}')"],
             creationflags=0x08000000
         )
+        with tts_process_lock:
+            current_tts_process = proc
+        proc.wait()
+        with tts_process_lock:
+            current_tts_process = None
 
 def speak(text: str):
     """Queue text to be spoken (safe to call from any thread)."""
     speech_queue.put(text)
+
+def stop_speaking():
+    """Kill current TTS and clear the queue."""
+    global current_tts_process
+    # Clear all pending speech
+    while not speech_queue.empty():
+        try:
+            speech_queue.get_nowait()
+        except queue.Empty:
+            break
+    # Kill current TTS process
+    with tts_process_lock:
+        if current_tts_process and current_tts_process.poll() is None:
+            current_tts_process.terminate()
+            current_tts_process = None
+    print("[STOPPED] Speech interrupted.")
+
+# ---------------------------------------------------------------------------
+# Conversation History — enables follow-up questions
+# ---------------------------------------------------------------------------
+conversation_history = []  # list of {"role": "user"|"assistant", "content": str}
+MAX_HISTORY = 10  # keep last 10 exchanges
+
+def add_to_history(role: str, content: str):
+    """Add a message to conversation history."""
+    conversation_history.append({"role": role, "content": content})
+    if len(conversation_history) > MAX_HISTORY * 2:
+        del conversation_history[:2]  # drop oldest pair
+
+def get_history_messages() -> list:
+    """Return conversation history formatted for API calls."""
+    return list(conversation_history)
+
+# ---------------------------------------------------------------------------
+# Deep Research — background Perplexity queries with sonar-deep-research
+# ---------------------------------------------------------------------------
+research_results = {}  # {question: {"status": "pending"|"done", "answer": str}}
+research_lock = threading.Lock()
+
+def deep_research_worker(question: str):
+    """Run a deep research query in the background via Perplexity."""
+    print(f"[RESEARCH] Starting deep research: {question}")
+    try:
+        response = perplexity_client.chat.completions.create(
+            model="sonar-deep-research",
+            max_tokens=1000,
+            messages=[
+                {"role": "system", "content": (
+                    "You are a thorough research assistant. Provide a comprehensive, "
+                    "well-structured answer with key facts and details. "
+                    "Be detailed but clear enough to be read aloud to a blind user."
+                )},
+                {"role": "user", "content": question},
+            ],
+        )
+        answer = response.choices[0].message.content
+        print(f"[RESEARCH] Completed: {question[:50]}...")
+    except Exception as e:
+        print(f"[RESEARCH ERROR] {e}")
+        answer = f"Sorry, the research failed: {e}"
+
+    with research_lock:
+        research_results[question] = {"status": "done", "answer": answer}
+    save_to_memory(f"Deep research: {question}", answer)
+    speak(f"Your research on '{question[:50]}' is ready. Ask me for the results when you're ready.")
+
+def start_deep_research(question: str):
+    """Kick off a background research thread."""
+    with research_lock:
+        research_results[question] = {"status": "pending", "answer": ""}
+    thread = threading.Thread(target=deep_research_worker, args=(question,), daemon=True)
+    thread.start()
+
+def get_research_results() -> str:
+    """Get all completed research results."""
+    with research_lock:
+        done = {q: r for q, r in research_results.items() if r["status"] == "done"}
+        pending = {q: r for q, r in research_results.items() if r["status"] == "pending"}
+
+    if not done and not pending:
+        return "You haven't asked me to research anything yet."
+
+    parts = []
+    if done:
+        for question, result in done.items():
+            parts.append(f"Research on '{question}': {result['answer']}")
+    if pending:
+        pending_list = ", ".join(f"'{q[:40]}'" for q in pending)
+        parts.append(f"Still researching: {pending_list}")
+
+    return "\n\n".join(parts)
 
 # ---------------------------------------------------------------------------
 # RAG Memory — ChromaDB for semantic search over past interactions
@@ -252,6 +354,42 @@ def recognize_faces(frame) -> list[str]:
     return recognized
 
 # ---------------------------------------------------------------------------
+# Barcode / QR Code Scanner
+# ---------------------------------------------------------------------------
+def scan_barcodes(frame) -> list[dict]:
+    """Scan frame for barcodes and QR codes, return decoded data."""
+    results = []
+    try:
+        barcodes = decode_barcodes(frame)
+        for barcode in barcodes:
+            data = barcode.data.decode("utf-8")
+            barcode_type = barcode.type
+            results.append({"data": data, "type": barcode_type})
+    except Exception as e:
+        print(f"[BARCODE ERROR] {e}")
+    return results
+
+def lookup_barcode_product(barcode_data: str) -> str:
+    """Look up a barcode using Perplexity to find product info."""
+    try:
+        response = perplexity_client.chat.completions.create(
+            model="sonar",
+            max_tokens=300,
+            messages=[
+                {"role": "system", "content": (
+                    "You are helping a blind user identify a product from its barcode. "
+                    "Give the product name, brand, key ingredients or allergens, and any "
+                    "important details. Be concise — 2-3 sentences max."
+                )},
+                {"role": "user", "content": f"What product has the barcode/UPC: {barcode_data}"},
+            ],
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[BARCODE LOOKUP ERROR] {e}")
+        return f"I found a barcode: {barcode_data}, but couldn't look up the product."
+
+# ---------------------------------------------------------------------------
 # Webcam
 # ---------------------------------------------------------------------------
 camera = cv2.VideoCapture(1)  # external USB webcam
@@ -354,13 +492,108 @@ is_active = False
 stay_active = False
 
 recognizer = sr.Recognizer()
-recognizer.energy_threshold = 1000
+recognizer.energy_threshold = 1500
 recognizer.dynamic_energy_threshold = False
 recognizer.pause_threshold = 0.8
 
 def handle_command(command: str):
     """Process a voice command — face registration, people questions, or image analysis."""
     lower = command.lower()
+
+    # Deep research: "research X" or "deep dive into X"
+    research_triggers = ["research ", "deep dive ", "look into ", "investigate "]
+    for trigger in research_triggers:
+        if lower.startswith(trigger):
+            question = command[len(trigger):].strip()
+            if question:
+                speak(f"I'll research that in the background. Ask me for results when you're ready.")
+                start_deep_research(question)
+            else:
+                speak("What would you like me to research?")
+            return
+
+    # Check for research results: "what did you find", "research results", etc.
+    results_keywords = ["what did you find", "research results", "what did you research",
+                        "give me the results", "research update", "what did you learn",
+                        "did you find", "the results", "find results", "research ready",
+                        "what are the results", "get the results"]
+    if any(kw in lower for kw in results_keywords):
+        results = get_research_results()
+        # Summarize if too long for speech
+        if len(results) > 500:
+            try:
+                summary = client.chat.completions.create(
+                    model="gpt-4o",
+                    max_tokens=200,
+                    messages=[
+                        {"role": "system", "content": "Summarize this research into 2-4 clear sentences for a blind user listening via text-to-speech. Be specific with key facts."},
+                        {"role": "user", "content": results},
+                    ],
+                )
+                results = summary.choices[0].message.content
+            except Exception:
+                results = results[:500]
+        add_to_history("user", command)
+        add_to_history("assistant", results)
+        speak(results)
+        return
+
+    # Barcode/QR scanning: "scan barcode", "scan this", "what product is this"
+    barcode_keywords = ["barcode", "qr code", "scan", "upc", "product code"]
+    if any(kw in lower for kw in barcode_keywords):
+        frame = get_latest_frame()
+        if frame is None:
+            speak("I can't see anything right now.")
+            return
+        barcodes = scan_barcodes(frame)
+        if barcodes:
+            for bc in barcodes:
+                speak(f"Found a {bc['type']} code. Looking up the product.")
+                product_info = lookup_barcode_product(bc["data"])
+                speak(product_info)
+                save_to_memory(f"Scanned barcode: {bc['data']}", product_info)
+                add_to_history("user", command)
+                add_to_history("assistant", product_info)
+        else:
+            # No barcode detected by pyzbar — try GPT-4o vision as fallback
+            speak("I couldn't detect a barcode directly. Let me try reading it visually.")
+            result = analyze_image("Scan and read any barcode, QR code, or product code visible in this image. Tell me the product name, brand, and key details.")
+            speak(result)
+            add_to_history("user", command)
+            add_to_history("assistant", result)
+        return
+
+    # Expiration date: "is this expired", "expiration date", "when does this expire"
+    expiry_keywords = ["expir", "expire", "best by", "best before", "use by", "sell by", "freshness"]
+    if any(kw in lower for kw in expiry_keywords):
+        speak("Let me check the date.")
+        result = analyze_image(
+            "Look carefully for any expiration date, best-by date, use-by date, or sell-by date on this product. "
+            "Read the exact date. Then tell the user if the product is still good or expired based on today's date. "
+            f"Today's date is {datetime.now().strftime('%B %d, %Y')}."
+        )
+        speak(result)
+        add_to_history("user", command)
+        add_to_history("assistant", result)
+        return
+
+    # Medication identification: "what pill is this", "identify this medication"
+    # Only trigger camera-based ID when asking about a physical pill (not general health questions)
+    medication_keywords = ["pill", "medication", "medicine", "tablet", "capsule", "drug", "prescription", "vitamin"]
+    medication_visual_cues = ["this", "that", "identify", "what is", "scan", "check this", "look at"]
+    has_medication_word = any(kw in lower for kw in medication_keywords)
+    is_physical_med = has_medication_word and any(cue in lower for cue in medication_visual_cues)
+    if is_physical_med:
+        speak("Let me identify this medication.")
+        result = analyze_image(
+            "Identify this medication/pill. Describe its shape, color, size, and any imprints or markings. "
+            "If you can identify the medication, state its name, common uses, and any important warnings. "
+            "Be specific about the imprint codes visible on the pill."
+        )
+        speak(result)
+        add_to_history("user", command)
+        add_to_history("assistant", result)
+        return
 
     # Face registration: "this is John" or "that is Sarah" or "remember John"
     # Search anywhere in the sentence, not just at the start
@@ -472,41 +705,49 @@ def handle_command(command: str):
         speak("Let me take a look.")
         result = analyze_image(command)
     else:
-        # General question — use Perplexity for web-powered answers
+        # General question — use Perplexity for web-powered answers with conversation history
         speak("Let me look that up.")
         try:
             rag_context = search_memory(command)
             system = (
                 "You are Vera, an AI assistant for a blind user. "
                 "Answer in 1-3 short, clear sentences that are easy to understand when read aloud. "
-                "Be concise and conversational, like a smart assistant."
+                "Be concise and conversational, like a smart assistant. "
+                "If the user asks a follow-up question, use the conversation history to give a contextual answer."
             )
             if rag_context:
                 system += "\n\nRelevant past interactions:\n" + rag_context
 
+            # Build messages with conversation history for follow-ups
+            messages = [{"role": "system", "content": system}]
+            messages.extend(get_history_messages())
+            messages.append({"role": "user", "content": command})
+
             response = perplexity_client.chat.completions.create(
                 model="sonar",
                 max_tokens=300,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": command},
-                ],
+                messages=messages,
             )
             result = response.choices[0].message.content
         except Exception as e:
             print(f"[PERPLEXITY ERROR] {e}")
-            # Fallback to GPT-4o if Perplexity fails
+            # Fallback to GPT-4o with conversation history
+            messages = [
+                {"role": "system", "content": "You are Vera, an AI assistant for a blind user. Answer in 1-3 short sentences. Use conversation history for follow-ups."},
+            ]
+            messages.extend(get_history_messages())
+            messages.append({"role": "user", "content": command})
             response = client.chat.completions.create(
                 model="gpt-4o",
                 max_tokens=300,
-                messages=[
-                    {"role": "system", "content": "You are Vera, an AI assistant for a blind user. Answer in 1-3 short sentences."},
-                    {"role": "user", "content": command},
-                ],
+                messages=messages,
             )
             result = response.choices[0].message.content
         save_to_memory(command, result)
 
+    # Track conversation for follow-ups
+    add_to_history("user", command)
+    add_to_history("assistant", result)
     speak(result)
 
 def listen_thread():
@@ -546,7 +787,9 @@ def listen_thread():
                         print("[IGNORED] No real words, likely noise")
                         continue
                     # When active, require at least 2 words to avoid processing background chatter
-                    if is_active and len(words) < 2 and text not in ["bye", "bye vera", "goodbye"]:
+                    # But always allow stop/bye commands
+                    stop_words = ["stop", "quiet", "enough", "bye", "goodbye"]
+                    if is_active and len(words) < 2 and text.strip() not in stop_words:
                         print("[IGNORED] Single word, likely background noise")
                         continue
 
@@ -575,10 +818,22 @@ def listen_thread():
                             print("[ACTIVE] Vera is in ongoing session. Say 'bye' to stop.")
                         continue
 
+                    # Stop works even when not active
+                    if text.strip() in ["stop", "stop talking", "shut up", "quiet", "enough", "stop vera", "stop it"]:
+                        stop_speaking()
+                        continue
+
                     if not is_active:
                         continue
 
+                    # Stop command — interrupt speech immediately
+                    if text.strip() in ["stop", "stop talking", "shut up", "quiet", "enough", "stop vera", "stop it"]:
+                        stop_speaking()
+                        speak("Okay.")
+                        continue
+
                     if text.strip() in ["bye", "bye vera", "goodbye", "goodbye vera", "bye bye"]:
+                        stop_speaking()
                         is_active = False
                         stay_active = False
                         speak("Goodbye! Say Hey Vera when you need me.")
