@@ -1,0 +1,74 @@
+# Configuration for Blind Navigation System
+
+# Model Settings
+model:
+  weights: 'yolov5n.pt'  # Nano model for fast testing
+  confidence_threshold: 0.4  # Lowered to detect more objects
+  iou_threshold: 0.45
+  img_size: 640
+  
+# Camera Settings
+camera:
+  source: 0  # 0 for default webcam
+  fps: 30
+  width: 640
+  height: 480
+  horizontal_fov_deg: 60.0  # Typical webcam horizontal FOV
+  vertical_fov_deg: 45.0    # Typical webcam vertical FOV
+
+# Detection Settings
+detection:
+  # Priority obstacles for blind navigation
+  priority_classes:
+    - 'person'
+    - 'bicycle'
+    - 'car'
+    - 'motorcycle'
+    - 'bus'
+    - 'truck'
+    - 'traffic light'
+    - 'stop sign'
+    - 'bench'
+    - 'chair'
+    - 'potted plant'
+    - 'dog'
+    - 'cat'
+    - 'laptop'
+    - 'mouse'
+    - 'keyboard'
+    - 'cell phone'
+    - 'book'
+    - 'bottle'
+    - 'cup'
+  
+  # Distance zones (based on bbox size)
+  distance_zones:
+    danger: 0.3   # Lowered for desktop testing
+    warning: 0.15
+    info: 0.0
+  
+  # Walking-path detection
+  path_width_m: 0.6
+  
+  # Collision probability threshold
+  collision_threshold: 0.4  # Lowered to see more alerts during testing
+  
+# Audio Feedback Settings
+audio:
+  enabled: false
+  engine: 'pyttsx3'
+  rate: 180
+  volume: 1.0
+  priority_alert: true
+  
+# TensorRT Settings
+tensorrt:
+  enabled: false
+  fp16: true
+  workspace_size: 2
+
+# Output Settings
+output:
+  display: true        # ENABLE for desktop
+  save_video: false
+  log_detections: true
