@@ -77,7 +77,13 @@ class BlindNavigationSystem:
             return None
     
     def process_detections(self, results, frame_shape):
-        """Process YOLO detections and compute distance + path membership + collision probability."""
+        """Process YOLO detections and compute distance + path membership + collision probability.
+
+        Returns:
+            dict with keys:
+              - 'detections': list of detection dicts (each includes 'quadrant_overlap' and 'primary_quadrants')
+              - 'quadrant_presence': list[int] of length 5 with percentages [far-left, left, center, right, far-right]
+        """
         detections = []
 
         frame_height, frame_width = frame_shape[:2]
@@ -173,16 +179,43 @@ class BlindNavigationSystem:
                     'distance_m': distance_m,
                     'in_path': in_path,
                     'collision_probability': collision_prob,
-                    'quadrant': quadrant
+                    'quadrant': quadrant,
+                    'quadrant_overlap': quadrant_overlap,
+                    'primary_quadrants': primary_quadrants
                 })
 
-            detections.sort(key=lambda x: (
-                0 if x['distance_zone'] == 'danger' else 1 if x['distance_zone'] == 'warning' else 2,
-                -x['collision_probability'],  # Sort by collision probability too
-                -x['confidence']
-            ))
+        # Sort detections by zone / probability / confidence
+        detections.sort(key=lambda x: (
+            0 if x['distance_zone'] == 'danger' else 1 if x['distance_zone'] == 'warning' else 2,
+            -x['collision_probability'],
+            -x['confidence']
+        ))
 
-            return detections
+        # Aggregate quadrant presence (0.0 - 1.0) using detection strength
+        quadrant_names = ['far-left', 'left', 'center', 'right', 'far-right']
+        presence_scores = {q: 0.0 for q in quadrant_names}
+
+        for det in detections:
+            overlap = det.get('quadrant_overlap', {})
+            conf = det.get('confidence', 0.0)
+            dist = det.get('distance_m')
+
+            # proximity weight: closer -> stronger (clamp at 5m range)
+            if dist is None:
+                proximity = 0.3
+            else:
+                proximity = max(0.0, min(1.0, (5.0 - dist) / 5.0))
+
+            # detection strength in [0,1]
+            strength = conf * proximity
+
+            for q in quadrant_names:
+                presence_scores[q] += strength * overlap.get(q, 0.0)
+
+        # Convert to 0-100 scale and clamp
+        quadrant_presence = [int(min(1.0, presence_scores[q]) * 100) for q in quadrant_names]
+
+        return {'detections': detections, 'quadrant_presence': quadrant_presence}
     
     def draw_detections(self, frame, detections):
         """Draw bounding boxes and labels on frame"""
@@ -207,6 +240,25 @@ class BlindNavigationSystem:
                 quad_label = "+".join([q[:3].upper() for q in det['primary_quadrants']])
                 cv2.putText(frame, quad_label, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        
+        return frame
+    
+    def draw_quadrant_lines(self, frame):
+        """Draw vertical lines showing the 5 quadrants"""
+        height, width = frame.shape[:2]
+        fifth = width // 5
+        
+        # Draw quadrant dividing lines
+        for i in range(1, 5):
+            x = i * fifth
+            cv2.line(frame, (x, 0), (x, height), (128, 128, 128), 1)
+        
+        # Label quadrants at top
+        quadrant_names = ['FAR-LEFT', 'LEFT', 'CENTER', 'RIGHT', 'FAR-RIGHT']
+        for i, name in enumerate(quadrant_names):
+            x_center = int((i + 0.5) * fifth)
+            cv2.putText(frame, name, (x_center - 40, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
         return frame
     
@@ -274,7 +326,9 @@ class BlindNavigationSystem:
                                    iou=self.config['model']['iou_threshold'],
                                    imgsz=self.config['model']['img_size'])
                 
-                detections = self.process_detections(results, frame.shape)
+                proc = self.process_detections(results, frame.shape)
+                detections = proc['detections']
+                quadrant_presence = proc.get('quadrant_presence', [0, 0, 0, 0, 0])
                 
                 # Check for collision alerts
                 collision_alerts = [det for det in detections if det['collision_probability'] >= collision_threshold]
@@ -301,6 +355,8 @@ class BlindNavigationSystem:
                     for det in detections[:3]:
                         print(f"[{det['distance_zone'].upper()}] {det['class_name']} "
                               f"on {det['position']} - {det['confidence']:.2f}")
+                    # Print quadrant presence summary (far-left, left, center, right, far-right)
+                    print(f"Quadrant presence: {quadrant_presence}")
         
         except KeyboardInterrupt:
             print("\nStopping system...")
