@@ -9,8 +9,5 @@ faces_db.json
 history.json
 *.jpg
 *.png
-.env
-chroma_db/
-known_faces/
-snapshots/
-*.json
+*.mp3
+_tts_temp.*

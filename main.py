@@ -32,29 +32,59 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 speech_queue = queue.Queue()
 current_tts_process = None
 tts_process_lock = threading.Lock()
+TEMP_AUDIO = os.path.join(BASE_DIR, "_tts_temp.mp3")
 
 def tts_worker():
-    """Dedicated thread that processes speech requests one by one."""
+    """Dedicated thread that processes speech requests using OpenAI TTS."""
     global current_tts_process
     while True:
         text = speech_queue.get()
         if text is None:
             continue
         print(f"[SPEAKING] {text}")
-        safe = text.replace("'", "''")
-        proc = subprocess.Popen(
-            ["powershell", "-Command",
-             f"Add-Type -AssemblyName System.Speech; "
-             f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-             f"$s.SelectVoice('Microsoft Zira Desktop'); "
-             f"$s.Rate = 1; $s.Speak('{safe}')"],
-            creationflags=0x08000000
-        )
-        with tts_process_lock:
-            current_tts_process = proc
-        proc.wait()
-        with tts_process_lock:
-            current_tts_process = None
+        try:
+            # Generate speech with OpenAI TTS — natural, expressive voice
+            response = client.audio.speech.create(
+                model="tts-1",
+                voice="nova",
+                input=text,
+                speed=1.1,
+            )
+            response.stream_to_file(TEMP_AUDIO)
+            # Play MP3 using PowerShell MediaPlayer (supports mp3 natively)
+            audio_path = TEMP_AUDIO.replace("'", "''")
+            proc = subprocess.Popen(
+                ["powershell", "-Command",
+                 f"Add-Type -AssemblyName PresentationCore; "
+                 f"$p = New-Object System.Windows.Media.MediaPlayer; "
+                 f"$p.Open([uri]'{audio_path}'); "
+                 f"$p.Play(); "
+                 f"Start-Sleep -Milliseconds 500; "
+                 f"while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
+                 f"$p.Close()"],
+                creationflags=0x08000000
+            )
+            with tts_process_lock:
+                current_tts_process = proc
+            proc.wait()
+            with tts_process_lock:
+                current_tts_process = None
+        except Exception as e:
+            print(f"[TTS ERROR] {e} — falling back to Windows TTS")
+            # Fallback to Windows TTS if OpenAI fails
+            safe = text.replace("'", "''")
+            proc = subprocess.Popen(
+                ["powershell", "-Command",
+                 f"Add-Type -AssemblyName System.Speech; "
+                 f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                 f"$s.Rate = 2; $s.Speak('{safe}')"],
+                creationflags=0x08000000
+            )
+            with tts_process_lock:
+                current_tts_process = proc
+            proc.wait()
+            with tts_process_lock:
+                current_tts_process = None
 
 def speak(text: str):
     """Queue text to be spoken (safe to call from any thread)."""
@@ -421,17 +451,18 @@ def capture_frame_b64() -> str | None:
 # Vision analysis via GPT-4o + RAG context
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are Vera, an AI assistant for a blind user. You receive an image from "
-    "their webcam along with a spoken request. Respond in 1-3 short, clear "
-    "sentences that are easy to understand when read aloud. Be specific about "
-    "details like numbers, colors, text content, and currency denominations. "
-    "If asked to read text, read ALL the text you can see exactly as written. "
-    "When told who people are, use their names naturally in your response. "
-    "You MUST describe people freely — their clothing, posture, actions, "
-    "appearance, expressions, and any visible details. The user is blind and "
-    "relies on you to describe everything including people. Never refuse to "
-    "describe a person. If a person's name is provided in the context, use it. "
-    "You have access to past conversation memory — use it to give contextual answers."
+    "You are Vera, an AI vision assistant built into smart glasses worn by a blind user. "
+    "You see exactly what the user sees through their glasses camera. When the user says "
+    "'what am I looking at' or 'what do I see', you describe what is in front of THEM. "
+    "Always respond from the user's perspective — say 'you're looking at' or 'in front of you' "
+    "instead of 'I see in the image'. Respond in 1-3 short, clear sentences that are easy "
+    "to understand when spoken aloud. Be specific about details like numbers, colors, text, "
+    "and currency. If asked to read text, read ALL visible text exactly as written. "
+    "When told who people are, use their names naturally. You MUST describe people freely — "
+    "clothing, posture, actions, appearance, expressions. The user is blind and relies on you "
+    "to describe everything including people. Never refuse to describe a person. "
+    "If a person's name is provided in context, use it. "
+    "You have access to past conversation memory — use it for contextual answers."
 )
 
 def analyze_image(command: str) -> str:
@@ -455,8 +486,8 @@ def analyze_image(command: str) -> str:
         system += "\n\nRelevant past interactions:\n" + rag_context
 
     response = client.chat.completions.create(
-        model="gpt-4o",
-        max_tokens=500,
+        model="gpt-4o-mini",
+        max_tokens=150,
         messages=[
             {"role": "system", "content": system},
             {
@@ -467,7 +498,7 @@ def analyze_image(command: str) -> str:
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/jpeg;base64,{image_b64}",
-                            "detail": "high",
+                            "detail": "low",
                         },
                     },
                 ],
@@ -523,7 +554,7 @@ def handle_command(command: str):
         if len(results) > 500:
             try:
                 summary = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4o-mini",
                     max_tokens=200,
                     messages=[
                         {"role": "system", "content": "Summarize this research into 2-4 clear sentences for a blind user listening via text-to-speech. Be specific with key facts."},
@@ -543,12 +574,12 @@ def handle_command(command: str):
     if any(kw in lower for kw in barcode_keywords):
         frame = get_latest_frame()
         if frame is None:
-            speak("I can't see anything right now.")
+            speak("I can't get a clear view right now.")
             return
         barcodes = scan_barcodes(frame)
         if barcodes:
             for bc in barcodes:
-                speak(f"Found a {bc['type']} code. Looking up the product.")
+                speak(f"I see a {bc['type']} code. Let me look up the product.")
                 product_info = lookup_barcode_product(bc["data"])
                 speak(product_info)
                 save_to_memory(f"Scanned barcode: {bc['data']}", product_info)
@@ -556,7 +587,7 @@ def handle_command(command: str):
                 add_to_history("assistant", product_info)
         else:
             # No barcode detected by pyzbar — try GPT-4o vision as fallback
-            speak("I couldn't detect a barcode directly. Let me try reading it visually.")
+            speak("I don't see a barcode. Let me try reading what's in front of you.")
             result = analyze_image("Scan and read any barcode, QR code, or product code visible in this image. Tell me the product name, brand, and key details.")
             speak(result)
             add_to_history("user", command)
@@ -566,7 +597,7 @@ def handle_command(command: str):
     # Expiration date: "is this expired", "expiration date", "when does this expire"
     expiry_keywords = ["expir", "expire", "best by", "best before", "use by", "sell by", "freshness"]
     if any(kw in lower for kw in expiry_keywords):
-        speak("Let me check the date.")
+        speak("Let me check that for you.")
         result = analyze_image(
             "Look carefully for any expiration date, best-by date, use-by date, or sell-by date on this product. "
             "Read the exact date. Then tell the user if the product is still good or expired based on today's date. "
@@ -584,15 +615,37 @@ def handle_command(command: str):
     has_medication_word = any(kw in lower for kw in medication_keywords)
     is_physical_med = has_medication_word and any(cue in lower for cue in medication_visual_cues)
     if is_physical_med:
-        speak("Let me identify this medication.")
-        result = analyze_image(
-            "Identify this medication/pill. Describe its shape, color, size, and any imprints or markings. "
-            "If you can identify the medication, state its name, common uses, and any important warnings. "
-            "Be specific about the imprint codes visible on the pill."
+        speak("Let me take a closer look at that.")
+        # Step 1: Identify what's in the user's hand via camera
+        visual_result = analyze_image(
+            "Identify this medication, pill, or medicine package. Read the name, brand, and any visible "
+            "dosage information on the label or imprints. Be specific about what you can read."
         )
-        speak(result)
+        speak(visual_result)
+        # Step 2: Search for detailed dosage and safety info via Perplexity
+        try:
+            dosage_response = perplexity_client.chat.completions.create(
+                model="sonar",
+                max_tokens=200,
+                messages=[
+                    {"role": "system", "content": (
+                        "You are a medication assistant for a blind user. Given a medication identification, "
+                        "provide the standard adult dosage, how often to take it, key warnings (like drowsiness "
+                        "or interactions), and what it's used for. Keep it to 2-3 sentences, spoken aloud."
+                    )},
+                    {"role": "user", "content": f"I'm holding this medication: {visual_result}. "
+                     f"What's the dosage and important info I should know?"},
+                ],
+            )
+            dosage_info = dosage_response.choices[0].message.content
+            speak(dosage_info)
+            result = visual_result + " " + dosage_info
+        except Exception as e:
+            print(f"[PERPLEXITY ERROR] {e}")
+            result = visual_result
         add_to_history("user", command)
         add_to_history("assistant", result)
+        save_to_memory(command, result)
         return
 
     # Face registration: "this is John" or "that is Sarah" or "remember John"
@@ -612,23 +665,39 @@ def handle_command(command: str):
 
             frame = get_latest_frame()
             if frame is None:
-                speak("I can't see anything right now.")
+                speak("I can't get a clear view right now.")
                 return
 
             if register_face(name, frame):
                 speak(f"Got it! I'll remember {name}.")
             else:
-                speak("I can't see a face clearly. Please face the camera and try again.")
+                speak("I can't see a face clearly. Make sure they're in front of you and try again.")
             return
 
     # People-related questions — handle locally with face recognition
     # "who is this" / "who am i" = face recognition
     # "who won the super bowl" = general question → Perplexity
-    face_phrases = ["who is this", "who is that", "who am i", "who are they", "who are you looking at",
-                    "who do you see", "who's this", "who's that", "whose face"]
-    people_keywords = ["person", "people", "someone", "somebody", "met", "faces"]
-    recall_keywords = ["met", "seen", "talked", "earlier", "before", "today", "yesterday", "remember", "recall", "past", "how many"]
-    live_keywords = ["this", "that", "here", "front", "looking at", "see right now"]
+    face_phrases = [
+        # First-person / glasses perspective
+        "who am i looking at", "who am i talking to", "who am i with",
+        "who is in front of me", "who's in front of me", "who is near me",
+        "who is with me", "who's with me", "who is around me",
+        "who do i see", "who am i facing", "who is standing",
+        "who is sitting", "who is next to me", "who's next to me",
+        # Classic triggers
+        "who is this", "who is that", "who am i", "who are they",
+        "who's this", "who's that", "whose face",
+        "do you recognize", "do you know who", "do you know this",
+        "who can you see", "who do you see",
+    ]
+    people_keywords = ["person", "people", "someone", "somebody", "met", "talked", "faces"]
+    recall_keywords = [
+        "met", "seen", "talked to", "spoken to", "earlier", "before",
+        "today", "yesterday", "remember", "recall", "past", "how many",
+        "who did i", "who have i", "who've i",
+    ]
+    live_keywords = ["this", "that", "here", "front of me", "looking at", "see right now",
+                     "near me", "with me", "next to me", "facing", "around me"]
 
     is_face_question = any(phrase in lower for phrase in face_phrases)
     is_people_question = is_face_question or any(kw in lower for kw in people_keywords)
@@ -662,9 +731,9 @@ def handle_command(command: str):
         if names:
             count = len(names)
             names_str = ", ".join(names[:-1]) + " and " + names[-1] if count > 1 else names[0]
-            speak(f"I've met {count} {'person' if count == 1 else 'people'}{time_label}: {names_str}.")
+            speak(f"You've met {count} {'person' if count == 1 else 'people'}{time_label}: {names_str}.")
         else:
-            speak(f"I haven't met anyone{time_label}.")
+            speak(f"You haven't met anyone{time_label}.")
         return
 
     if is_people_question:
@@ -675,45 +744,52 @@ def handle_command(command: str):
             if recognized:
                 names = " and ".join(recognized)
                 if is_recall_question:
-                    speak(f"Yes, I know {'them' if len(recognized) > 1 else 'this person'}. That's {names}.")
+                    speak(f"Yes, you know {'them' if len(recognized) > 1 else 'this person'}. That's {names}.")
                 elif len(recognized) == 1:
-                    speak(f"That's {names}.")
+                    speak(f"You're looking at {names}.")
                 else:
-                    speak(f"I can see {names}.")
+                    speak(f"You're with {names}.")
                 save_to_memory(command, f"Identified: {names}")
             else:
                 faces = detect_faces(frame)
                 if len(faces) > 0:
                     if is_recall_question:
-                        speak(f"I can see someone, but I don't recognize them. Say 'this is' followed by their name to teach me.")
+                        speak(f"There's someone in front of you, but I don't recognize them. Say 'this is' followed by their name to introduce me.")
                     else:
-                        speak(f"I can see {len(faces)} person{'s' if len(faces) > 1 else ''}, but I don't recognize them. Say 'this is' followed by their name to teach me.")
+                        speak(f"There {'is' if len(faces) == 1 else 'are'} {len(faces)} {'person' if len(faces) == 1 else 'people'} in front of you, but I don't recognize them. Say 'this is' followed by their name to introduce me.")
                 else:
-                    speak("I don't see anyone right now.")
+                    speak("I don't see anyone in front of you right now.")
         else:
-            speak("I can't see anything right now.")
+            speak("I can't get a clear view right now.")
         return
 
     # Decide if this is a vision command (needs camera) or a general question
-    vision_keywords = ["see", "look", "read", "show", "describe", "what's in front",
-                       "holding", "wearing", "color", "text", "document", "price",
-                       "money", "currency", "bill", "label", "sign", "screen",
-                       "bottle", "food", "object", "item", "brand", "product"]
+    vision_keywords = [
+        # First-person / glasses perspective
+        "what am i looking at", "what do i see", "what's in front of me",
+        "what am i holding", "what is in my hand", "what's around me",
+        "what am i wearing", "what color is", "what does this say",
+        # General vision triggers
+        "see", "look", "read", "show", "describe",
+        "holding", "wearing", "color", "text", "document", "price",
+        "money", "currency", "bill", "label", "sign", "screen",
+        "bottle", "food", "object", "item", "brand", "product",
+    ]
     needs_vision = any(kw in lower for kw in vision_keywords)
 
     if needs_vision:
-        speak("Let me take a look.")
+        speak("Let me see.")
         result = analyze_image(command)
     else:
         # General question — use Perplexity for web-powered answers with conversation history
-        speak("Let me look that up.")
+        speak("One sec.")
         try:
             rag_context = search_memory(command)
             system = (
-                "You are Vera, an AI assistant for a blind user. "
-                "Answer in 1-3 short, clear sentences that are easy to understand when read aloud. "
-                "Be concise and conversational, like a smart assistant. "
-                "If the user asks a follow-up question, use the conversation history to give a contextual answer."
+                "You are Vera, an AI assistant built into smart glasses worn by a blind user. "
+                "Answer in 1-3 short, clear sentences that are easy to understand when spoken aloud. "
+                "Be concise and natural, like a helpful friend. Speak from the user's perspective. "
+                "If the user asks a follow-up question, use conversation history for context."
             )
             if rag_context:
                 system += "\n\nRelevant past interactions:\n" + rag_context
@@ -725,21 +801,21 @@ def handle_command(command: str):
 
             response = perplexity_client.chat.completions.create(
                 model="sonar",
-                max_tokens=300,
+                max_tokens=150,
                 messages=messages,
             )
             result = response.choices[0].message.content
         except Exception as e:
             print(f"[PERPLEXITY ERROR] {e}")
-            # Fallback to GPT-4o with conversation history
+            # Fallback to GPT-4o-mini with conversation history
             messages = [
-                {"role": "system", "content": "You are Vera, an AI assistant for a blind user. Answer in 1-3 short sentences. Use conversation history for follow-ups."},
+                {"role": "system", "content": "You are Vera, an AI assistant built into smart glasses for a blind user. Answer in 1-3 short sentences. Speak from the user's perspective."},
             ]
             messages.extend(get_history_messages())
             messages.append({"role": "user", "content": command})
             response = client.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=300,
+                model="gpt-4o-mini",
+                max_tokens=150,
                 messages=messages,
             )
             result = response.choices[0].message.content
@@ -788,7 +864,8 @@ def listen_thread():
                         continue
                     # When active, require at least 2 words to avoid processing background chatter
                     # But always allow stop/bye commands
-                    stop_words = ["stop", "quiet", "enough", "bye", "goodbye"]
+                    stop_words = ["stop", "quiet", "enough", "bye", "goodbye", "buy", "by",
+                                  "done", "sleep", "nevermind"]
                     if is_active and len(words) < 2 and text.strip() not in stop_words:
                         print("[IGNORED] Single word, likely background noise")
                         continue
@@ -814,7 +891,7 @@ def listen_thread():
                         else:
                             is_active = True
                             stay_active = True
-                            speak("Hi! I'm Vera. How can I help?")
+                            speak("I'm here. What do you need?")
                             print("[ACTIVE] Vera is in ongoing session. Say 'bye' to stop.")
                         continue
 
@@ -832,11 +909,20 @@ def listen_thread():
                         speak("Okay.")
                         continue
 
-                    if text.strip() in ["bye", "bye vera", "goodbye", "goodbye vera", "bye bye"]:
+                    sleep_phrases = [
+                        "bye", "bye vera", "goodbye", "goodbye vera", "bye bye",
+                        "go to sleep", "go sleep", "sleep", "sleep vera",
+                        "i'm done", "im done", "done", "that's all", "thats all",
+                        "thanks bye", "thank you bye", "see you", "see ya",
+                        "nevermind", "never mind", "good night", "goodnight",
+                        "buy", "buy vera", "by", "by vera",  # common misrecognitions
+                        "i'm good", "im good", "all good", "that's it", "thats it",
+                    ]
+                    if text.strip() in sleep_phrases or any(p in text.strip() for p in ["go to sleep", "i'm done", "that's all", "that's it"]):
                         stop_speaking()
                         is_active = False
                         stay_active = False
-                        speak("Goodbye! Say Hey Vera when you need me.")
+                        speak("Going to sleep. Say Hey Vera when you need me.")
                         print("[SLEEPING] Vera is now asleep.")
                         continue
 
@@ -878,7 +964,7 @@ def main():
     tts = threading.Thread(target=tts_worker, daemon=True)
     tts.start()
 
-    speak("Vera is ready. Say Hey Vera to start.")
+    speak("Vera is ready. Just say Hey Vera whenever you need me.")
 
     # Start voice listener thread
     voice = threading.Thread(target=listen_thread, daemon=True)
