@@ -311,3 +311,150 @@ class DetectorUtils:
         significant_quadrants.sort(key=lambda x: x[1], reverse=True)
         
         return [name for name, _ in significant_quadrants]
+
+
+# ---------------------------------------------------------------------------
+# Monocular depth estimator (ONNX / Depth‑Anything integration)
+# ---------------------------------------------------------------------------
+try:
+    import onnxruntime as ort
+    _HAS_ONNXRUNTIME = True
+except Exception:
+    ort = None
+    _HAS_ONNXRUNTIME = False
+
+
+class DepthEstimator:
+    """Lightweight ONNX depth runner with simple auto‑scale calibration.
+
+    - Loads an ONNX model (Depth‑Anything small recommended).
+    - Produces a per‑pixel depth map (float) resized to input frame size.
+    - Provides sampling + a simple linear calibration to convert model output -> meters.
+
+    Notes:
+    - Many monocular models output relative depth. This class supports a
+      simple linear scale calibration using a reference object (default: person ≈ 1.7m).
+    """
+
+    def __init__(self, cfg: dict):
+        self.enabled = bool(cfg.get('enabled', True))
+        self.provider = cfg.get('provider', 'onnx')
+        self.model_path = cfg.get('model_path')
+        self.input_size = int(cfg.get('input_size', 384))
+        self.run_every_n_frames = int(cfg.get('run_every_n_frames', 2))
+        self.auto_calibrate = bool(cfg.get('auto_calibrate', True))
+        self.invert_depth = bool(cfg.get('invert_depth', False))
+        self.scale = float(cfg.get('output_scale', 1.0))
+        calib = cfg.get('calibration', {}) or {}
+        self.reference_class = calib.get('reference_class', 'person')
+        self.reference_distance_m = float(calib.get('reference_distance_m', 1.7))
+
+        self._session = None
+        self._input_name = None
+        self.calibrated = False
+
+        if self.provider == 'onnx':
+            if not _HAS_ONNXRUNTIME:
+                raise ImportError('onnxruntime is required to load ONNX depth models (pip install onnxruntime)')
+            providers = ort.get_available_providers()
+            chosen = 'CPUExecutionProvider'
+            if 'CUDAExecutionProvider' in providers:
+                chosen = 'CUDAExecutionProvider'
+            try:
+                self._session = ort.InferenceSession(self.model_path, providers=[chosen])
+                self._input_name = self._session.get_inputs()[0].name
+            except Exception as ex:
+                raise RuntimeError(f'Failed to load ONNX model {self.model_path}: {ex}')
+        else:
+            raise ValueError('Unsupported depth provider: ' + str(self.provider))
+
+    def infer_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Run model and return a single-channel depth map resized to frame size."""
+        if self._session is None:
+            raise RuntimeError('Depth model session not available')
+
+        h, w = frame.shape[:2]
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        img = img.astype(np.float32) / 255.0
+        # to NCHW
+        img = np.transpose(img, (2, 0, 1))[None, ...]
+
+        ort_inputs = {self._input_name: img}
+        ort_outs = self._session.run(None, ort_inputs)
+        out = ort_outs[0]
+
+        # squeeze and normalize shape
+        if out.ndim == 4 and out.shape[1] == 1:
+            depth = out[0, 0]
+        elif out.ndim == 3:
+            depth = out[0]
+        else:
+            depth = np.squeeze(out)
+
+        # convert to float32 and resize back to original frame size
+        depth = depth.astype(np.float32)
+        depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_LINEAR)
+        # Ensure finite
+        depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+        return depth
+
+    def sample_depth(self, depth_map: np.ndarray, bbox: Tuple[int, int, int, int]) -> float:
+        x1, y1, x2, y2 = bbox
+        h, w = depth_map.shape[:2]
+        x1 = max(0, min(w - 1, int(x1)))
+        x2 = max(0, min(w, int(x2)))
+        y1 = max(0, min(h - 1, int(y1)))
+        y2 = max(0, min(h, int(y2)))
+
+        if x2 <= x1 or y2 <= y1:
+            # fallback to global median
+            return float(np.median(depth_map))
+
+        crop = depth_map[y1:y2, x1:x2]
+        if crop.size == 0:
+            return float(np.median(depth_map))
+
+        return float(np.median(crop))
+
+    def depth_to_meters(self, depth_val: float) -> float:
+        """Convert a model depth value to meters using a linear scale.
+
+        If model outputs inverse depth set `invert_depth=True` in config and
+        the conversion will use `meters = 1 / (depth_val * scale)`.
+        """
+        if depth_val is None or not np.isfinite(depth_val):
+            return None
+
+        eps = 1e-6
+        if self.invert_depth:
+            if depth_val <= eps:
+                return None
+            meters = 1.0 / (depth_val * self.scale + eps)
+        else:
+            meters = depth_val * self.scale
+
+        # clamp to reasonable range
+        return float(max(0.1, min(meters, 200.0)))
+
+    def calibrate_from_depth(self, depth_val: float):
+        """Single-sample linear calibration using known reference distance."""
+        if not np.isfinite(depth_val) or depth_val <= 0:
+            return
+
+        if self.invert_depth:
+            # for inverse-depth outputs the scale formula differs
+            new_scale = 1.0 / (depth_val * self.reference_distance_m)
+        else:
+            new_scale = self.reference_distance_m / depth_val
+
+        if not self.calibrated:
+            self.scale = new_scale
+            self.calibrated = True
+        else:
+            # smooth updates
+            alpha = 0.4
+            self.scale = alpha * new_scale + (1.0 - alpha) * self.scale
+
+    def __repr__(self):
+        return f"DepthEstimator(provider={self.provider}, model={self.model_path}, calibrated={self.calibrated}, scale={self.scale:.3f})"

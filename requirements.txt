@@ -18,3 +18,9 @@ ultralytics
 # Optional: For TensorRT optimization (install separately on Jetson)
 # tensorrt
 # pycuda
+
+# Monocular depth runtime (ONNX)
+onnxruntime >= 1.15.0  # required for Depth‑Anything ONNX inference (use onnxruntime‑gpu on supported devices)
+
+# Helper to download models from Hugging Face
+huggingface-hub >= 0.14.1

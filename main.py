@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent / "src"))
-from detector import DetectorUtils
+from detector import DetectorUtils, DepthEstimator
 
 
 class BlindNavigationSystem:
@@ -29,7 +29,18 @@ class BlindNavigationSystem:
         
         print("Setting up audio feedback...")
         self.audio = self.init_audio()
-        
+
+        # Initialize depth estimator (optional)
+        self.depth_model = None
+        self.depth_map = None
+        try:
+            if self.config.get('depth', {}).get('enabled', False):
+                self.depth_model = DepthEstimator(self.config['depth'])
+                print(f"Depth model initialized: {self.depth_model}")
+        except Exception as e:
+            print(f"Warning: depth model failed to initialize: {e}")
+            self.depth_model = None
+
         self.frame_count = 0
         self.fps = 0
         self.start_time = time.time()
@@ -76,8 +87,12 @@ class BlindNavigationSystem:
             print("Warning: audio_feedback module not found. Running without audio.")
             return None
     
-    def process_detections(self, results, frame_shape):
+    def process_detections(self, results, frame_shape, depth_map=None):
         """Process YOLO detections and compute distance + path membership + collision probability.
+
+        If `depth_map` is provided (from a monocular depth model) per‑bbox depth sampling is used
+        and a simple auto‑scale calibration may be applied. Otherwise the original bbox‑height
+        heuristic is used.
 
         Returns:
             dict with keys:
@@ -124,14 +139,43 @@ class BlindNavigationSystem:
                 else:
                     position = 'right'
 
-                # Estimate distance (meters) using detector utility
-                try:
-                    distance_m = DetectorUtils.estimate_distance((x1, y1, x2, y2),
-                                                                (frame_height, frame_width),
-                                                                object_type=class_name,
-                                                                camera_vertical_fov_deg=cam_vfov)
-                except Exception:
-                    distance_m = None
+                # Prefer depth-map based estimate when available; otherwise fall back
+                depth_val = None
+                distance_m = None
+                if self.depth_model is not None and depth_map is not None:
+                    try:
+                        depth_val = self.depth_model.sample_depth(depth_map, (x1, y1, x2, y2))
+                        # Auto‑calibrate scale if configured and we see the reference class
+                        if getattr(self.depth_model, 'auto_calibrate', False) and class_name == self.depth_model.reference_class:
+                            self.depth_model.calibrate_from_depth(depth_val)
+                        distance_m = self.depth_model.depth_to_meters(depth_val)
+                    except Exception:
+                        depth_val = None
+                        distance_m = None
+
+                if distance_m is None:
+                    try:
+                        distance_m = DetectorUtils.estimate_distance((x1, y1, x2, y2),
+                                                                    (frame_height, frame_width),
+                                                                    object_type=class_name,
+                                                                    camera_vertical_fov_deg=cam_vfov)
+                    except Exception:
+                        distance_m = None
+
+                # Determine close-person boolean (configurable)
+                close_thresh = self.config['detection'].get('close_distance_m', 1.5)
+                close_bbox_fraction = self.config['detection'].get('close_bbox_fraction', 0.45)
+
+                is_close = False
+                if class_name == 'person':
+                    # 1) depth-based check (preferred)
+                    if distance_m is not None and distance_m <= close_thresh:
+                        is_close = True
+                    else:
+                        # 2) fallback: bounding-box height fraction
+                        bbox_h = (y2 - y1)
+                        if frame_height > 0 and (bbox_h / frame_height) >= close_bbox_fraction:
+                            is_close = True
 
                 # Compute whether object lies within the user's walking path
                 try:
@@ -177,11 +221,13 @@ class BlindNavigationSystem:
                     'position': position,
                     'bbox': (x1, y1, x2, y2),
                     'distance_m': distance_m,
+                    'depth_value': depth_val,
                     'in_path': in_path,
                     'collision_probability': collision_prob,
                     'quadrant': quadrant,
                     'quadrant_overlap': quadrant_overlap,
-                    'primary_quadrants': primary_quadrants
+                    'primary_quadrants': primary_quadrants,
+                    'is_close': is_close
                 })
 
         # Sort detections by zone / probability / confidence
@@ -320,13 +366,23 @@ class BlindNavigationSystem:
                 if not ret:
                     print("Failed to grab frame")
                     break
-                
+
+                # Run depth model periodically (if enabled)
+                if self.depth_model is not None:
+                    run_every = self.config['depth'].get('run_every_n_frames', 2)
+                    if (self.frame_count % run_every) == 0:
+                        try:
+                            self.depth_map = self.depth_model.infer_frame(frame)
+                        except Exception as e:
+                            print(f"Depth inference failed: {e}")
+                            self.depth_map = None
+
                 results = self.model(frame, 
                                    conf=self.config['model']['confidence_threshold'],
                                    iou=self.config['model']['iou_threshold'],
                                    imgsz=self.config['model']['img_size'])
                 
-                proc = self.process_detections(results, frame.shape)
+                proc = self.process_detections(results, frame.shape, depth_map=self.depth_map)
                 detections = proc['detections']
                 quadrant_presence = proc.get('quadrant_presence', [0, 0, 0, 0, 0])
                 
@@ -353,8 +409,11 @@ class BlindNavigationSystem:
                 
                 if self.config['output']['log_detections'] and detections:
                     for det in detections[:3]:
-                        print(f"[{det['distance_zone'].upper()}] {det['class_name']} "
-                              f"on {det['position']} - {det['confidence']:.2f}")
+                        depth_raw = det.get('depth_value')
+                        depth_raw_str = f"{depth_raw:.3f}" if depth_raw is not None else "N/A"
+                        dist_str = f"{det['distance_m']:.2f}m" if det['distance_m'] is not None else "N/A"
+                        close_str = 'YES' if det.get('is_close') else 'NO'
+                        print(f"[{det['distance_zone'].upper()}] {det['class_name']} on {det['position']} - {det['confidence']:.2f} - {dist_str} - raw_depth:{depth_raw_str} - close:{close_str}")
                     # Print quadrant presence summary (far-left, left, center, right, far-right)
                     print(f"Quadrant presence: {quadrant_presence}")
         
