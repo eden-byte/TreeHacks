@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+chroma_db/
+snapshots/
+known_faces/
+face_encodings.json
+faces_db.json
+history.json
+*.jpg
+*.png
