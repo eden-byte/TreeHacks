@@ -79,7 +79,7 @@ An AI-native assistive vision system that provides:
 - Text-to-Speech (Audio feedback)
 
 **Hardware:**
-- Meta Ray-Ban glasses (Camera + audio)
+- Custom glasses with camera
 - Custom 5-zone vibration necklace
 - Arduino/ESP32 (Haptic motor control)
 
