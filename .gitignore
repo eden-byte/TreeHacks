@@ -10,4 +10,4 @@ history.json
 *.jpg
 *.png
 *.mp3
-_tts_temp.*
+_tts_temp.*venv/
