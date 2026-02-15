@@ -597,7 +597,88 @@ def lookup_barcode_product(barcode_data: str) -> str:
         return f"I found a barcode: {barcode_data}, but couldn't look up the product."
 
 # ---------------------------------------------------------------------------
-# Jetson Object Detection — HTTP client (runs in own daemon thread)
+# Visual Product Search — find similar items online
+# ---------------------------------------------------------------------------
+def find_similar_product() -> str:
+    """Identify product from camera and find where to buy it online."""
+    image_b64 = capture_frame_b64()
+    if image_b64 is None:
+        return "Sorry, I could not access the camera."
+
+    # Step 1: Use GPT-4o to identify the product
+    print("[PRODUCT SEARCH] Identifying product...")
+    try:
+        identify_response = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=300,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are helping identify a product from an image. "
+                        "Describe the product in detail: brand, model, color, style, "
+                        "key features, and any visible text or logos. "
+                        "Be specific and concise (2-3 sentences). "
+                        "Focus on searchable details that would help find this product online."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What product is this? Describe it in detail."},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+        product_description = identify_response.choices[0].message.content
+        print(f"[PRODUCT SEARCH] Identified: {product_description}")
+
+        # Step 2: Use Perplexity to find where to buy it
+        print("[PRODUCT SEARCH] Searching for purchase links...")
+        search_response = perplexity_client.chat.completions.create(
+            model="sonar",
+            max_tokens=400,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are helping a blind user find where to buy a product online. "
+                        "Provide 1-2 specific shopping links (Amazon, official retailer, etc.) "
+                        "where they can purchase this item. Include the product name and "
+                        "approximate price if available. Be concise — 2-3 sentences max. "
+                        "ALWAYS include at least one direct URL where they can buy it."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Where can I buy this product? {product_description}"
+                },
+            ],
+        )
+        result = search_response.choices[0].message.content
+
+        # Save to memory
+        frame = get_latest_frame()
+        image_path = ""
+        if frame is not None:
+            image_path = save_snapshot(frame)
+        save_to_memory(f"Find similar product: {product_description}", result, image_path)
+
+        return result
+
+    except Exception as e:
+        print(f"[PRODUCT SEARCH ERROR] {e}")
+        return f"Sorry, I couldn't complete the product search. Error: {e}"
+
+# ---------------------------------------------------------------------------
+# Jetson Object Detection - HTTP client
 # ---------------------------------------------------------------------------
 JETSON_URL = os.getenv("JETSON_URL", "http://jetson.local:5000")
 JETSON_ENABLED = os.getenv("JETSON_ENABLED", "false").lower() == "true"
@@ -927,6 +1008,19 @@ def handle_command(command: str):
             add_to_history("assistant", result)
         return
 
+    # Visual Product Search: "where can I buy this", "find this online", "find similar"
+    shopping_keywords = ["where can i buy", "find this online", "find similar", "where to buy",
+                         "buy this", "purchase this", "shop for this", "find me this",
+                         "where to get", "find this product", "buy online", "shopping link",
+                         "where do i get", "get me this", "order this"]
+    if any(kw in lower for kw in shopping_keywords):
+        speak("Let me identify this and find where you can buy it.")
+        result = find_similar_product()
+        speak(result)
+        add_to_history("user", command)
+        add_to_history("assistant", result)
+        return
+
     # Expiration date: "is this expired", "expiration date", "when does this expire"
     expiry_keywords = ["expir", "expire", "best by", "best before", "use by", "sell by", "freshness"]
     if any(kw in lower for kw in expiry_keywords):
@@ -1175,6 +1269,7 @@ def listen_thread():
             print('    "What do you see?"')
             print('    "This is John"          — register a face')
             print('    "Who is this?"           — identify a person')
+            print('    "Where can I buy this?"  — find product online')
             print('    "What did I look at earlier?" — RAG memory recall')
             print('    "Bye"                    — go to sleep')
             print()
