@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "@/styles/globals.css";
+import { UserRoleProvider } from "@/lib/contexts/userRole";
 
 const inter = Inter({ subsets: ["latin"], variable: '--font-inter' });
 
@@ -34,9 +35,11 @@ export default function RootLayout({
           Skip to main content
         </a>
 
-        <div id="root" className="min-h-screen flex flex-col">
-          {children}
-        </div>
+        <UserRoleProvider>
+          <div id="root" className="min-h-screen flex flex-col">
+            {children}
+          </div>
+        </UserRoleProvider>
       </body>
     </html>
   );

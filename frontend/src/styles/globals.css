@@ -3,8 +3,11 @@
 @tailwind utilities;
 
 @layer base {
-  /* Inter font from Google Fonts */
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  /* Prefer Apple's San Francisco (when available) then fall back to system fonts */
+  /* We don't ship SF — this picks it up on Apple platforms via the system stack */
+  /* Removed Google Inter import in favor of system/SF stack */
+  /* Use Orbitron from Google Fonts for a futuristic holo-style display */
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
 
   /* Base accessibility styles */
   * {
@@ -17,7 +20,8 @@
 
   body {
     @apply bg-background text-text-primary antialiased;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: 'Orbitron', 'SF Pro Text', 'SF Pro Display', 'San Francisco', -apple-system, BlinkMacSystemFont,
+                 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     font-size: 16px;
     line-height: 1.5;
   }
@@ -93,13 +97,33 @@
            focus-visible:ring-4 focus-visible:ring-border-focus focus-visible:ring-offset-2;
   }
 
+  /* Futuristic, soft pastel primary button (light pastel blue) */
   .btn-primary {
-    @apply bg-primary text-white hover:bg-primary-light active:scale-95 shadow-lg shadow-primary/20;
+    background: linear-gradient(180deg, #D8EEFF 0%, #CFE9FF 100%);
+    color: #082033;
+    border: 1px solid rgba(6,30,50,0.06);
+    box-shadow: 0 6px 30px rgba(46,140,255,0.10), inset 0 1px 0 rgba(255,255,255,0.6);
+    border-radius: 14px;
+    backdrop-filter: blur(6px);
   }
 
+  .btn-primary:hover {
+    transform: translateY(-3px) scale(1.01);
+    box-shadow: 0 12px 48px rgba(46,140,255,0.12), 0 0 24px rgba(46,140,255,0.06);
+  }
+
+  /* Complementary pastel secondary (lavender) */
   .btn-secondary {
-    @apply bg-surface-elevated border-2 border-border-light text-text-primary hover:bg-surface-light
-           active:scale-95;
+    background: linear-gradient(180deg, #F3EFFF 0%, #EFE6FF 100%);
+    color: #12202a;
+    border: 1px solid rgba(60,40,120,0.06);
+    box-shadow: 0 6px 26px rgba(120,80,220,0.06), inset 0 1px 0 rgba(255,255,255,0.6);
+    border-radius: 14px;
+  }
+
+  .btn-secondary:hover {
+    transform: translateY(-2px) scale(1.005);
+    box-shadow: 0 10px 36px rgba(120,80,220,0.08);
   }
 
   .btn-large {
@@ -253,7 +277,8 @@
   margin: 0;
   letter-spacing: -2px;
   text-align: center;
-  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'SF Pro Text', 'SF Pro Display', 'San Francisco', -apple-system, BlinkMacSystemFont,
+               'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   text-shadow: 0 6px 30px rgba(2,6,23,0.06);
 }  
 
@@ -264,7 +289,8 @@
   margin: -1rem 0 0 0;
   text-align: center;
   letter-spacing: 2px;
-  font-family: 'Inter', sans-serif;
+  font-family: 'SF Pro Text', 'SF Pro Display', 'San Francisco', -apple-system, BlinkMacSystemFont,
+               'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   text-transform: uppercase;
 }
 
@@ -307,27 +333,41 @@
 
 /* Get Started button - light frosted glass */
 .get-started-btn {
-  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(250,250,250,0.92));
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border: 1px solid rgba(2,6,23,0.06);
-  border-radius: 60px;
-  padding: 1.25rem 3.5rem;
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: rgba(2,6,23,0.95);
-  cursor: pointer;
-  transition: transform 220ms ease, box-shadow 220ms ease, background 220ms ease;
-  box-shadow: 0 10px 30px rgba(2,6,23,0.06);
-  letter-spacing: 0.4px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(248,250,255,0.94));
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(6,30,50,0.06);
+    border-radius: 999px;
+    padding: 1.25rem 3.5rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #031126;
+    cursor: pointer;
+    transition: transform 220ms cubic-bezier(.2,.9,.2,1), box-shadow 220ms ease, background 220ms ease;
+    box-shadow: 0 14px 40px rgba(46,140,255,0.08), 0 0 30px rgba(46,140,255,0.03);
+    letter-spacing: 0.6px;
 }
 
 .get-started-btn:hover {
-  transform: translateY(-3px) scale(1.02);
-  box-shadow: 0 16px 48px rgba(2,6,23,0.08);
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 20px 56px rgba(46,140,255,0.12), 0 0 40px rgba(46,140,255,0.05);
 }
 
 .get-started-btn:focus {
+    outline: none;
+    box-shadow: 0 0 0 8px rgba(46,140,255,0.12), 0 20px 56px rgba(46,140,255,0.08);
+}
+
+/* Auth/login page background helper — apply to the auth page wrapper */
+.auth-page,
+.login-page,
+.signup-page {
+  background-color: #ffffff;
+  color: #071427;
+}
+
+/* Slight accent glow for focused interactive elements to feel 'futuristic' */
+.focus-glow:focus {
+  box-shadow: 0 6px 28px rgba(46,140,255,0.12), 0 0 18px rgba(46,140,255,0.04);
   outline: none;
-  box-shadow: 0 0 0 6px rgba(37,99,235,0.12), 0 16px 48px rgba(2,6,23,0.08);
 }

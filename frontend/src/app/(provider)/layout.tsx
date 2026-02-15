@@ -1,12 +1,14 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Video, Wifi, Activity, ArrowLeft, Settings } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Video, Wifi, Activity, Settings, LogOut } from "lucide-react";
+import { useUserRole } from "@/lib/contexts/userRole";
 
 const navigationItems = [
-  { href: "/provider/live-feed", label: "Live Feed", icon: Video },
-  { href: "/provider/motor-visualization", label: "Motor Visualization", icon: Wifi },
-  { href: "/provider/system-status", label: "System Status", icon: Activity },
+  { href: "/live-feed", label: "Live Feed", icon: Video },
+  { href: "/motor-visualization", label: "Motor Visualization", icon: Wifi },
+  { href: "/system-status", label: "System Status", icon: Activity },
 ];
 
 export default function ProviderLayout({
@@ -16,35 +18,56 @@ export default function ProviderLayout({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { role, isLoggedIn, setRole, setIsLoggedIn } = useUserRole();
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Check if user is logged in and has correct role
+  useEffect(() => {
+    if (!isLoggedIn || role !== "provider") {
+      router.replace("/auth");
+    } else {
+      setIsLoading(false);
+    }
+  }, [isLoggedIn, role, router]);
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setRole(null);
+    router.push("/auth");
+  };
+
+  if (isLoading) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Top Navigation Bar */}
       <header className="bg-surface border-b-2 border-border px-6 py-4 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          {/* Logo and Back Button */}
+          {/* Logo and Title */}
           <div className="flex items-center space-x-6">
-            <button
-              onClick={() => router.push("/")}
-              className="flex items-center text-text-secondary hover:text-primary transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-border-focus rounded-lg p-2 -m-2"
-              aria-label="Go back to home page"
-            >
-              <ArrowLeft className="w-6 h-6 mr-2" aria-hidden="true" />
-              <span className="font-semibold">Back</span>
-            </button>
-
             <h1 className="text-2xl font-bold text-primary">
               Vera Provider Dashboard
             </h1>
           </div>
 
-          {/* Settings */}
-          <button
-            className="p-3 rounded-lg hover:bg-background transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-border-focus"
-            aria-label="Open settings"
-          >
-            <Settings className="w-6 h-6 text-text-secondary" aria-hidden="true" />
-          </button>
+          {/* Settings & Logout */}
+          <div className="flex items-center space-x-4">
+            <button
+              className="p-3 rounded-lg hover:bg-background transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-border-focus"
+              aria-label="Open settings"
+            >
+              <Settings className="w-6 h-6 text-text-secondary" aria-hidden="true" />
+            </button>
+            <button
+              onClick={handleLogout}
+              className="p-3 rounded-lg hover:bg-red-900/20 transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-border-focus"
+              aria-label="Logout"
+            >
+              <LogOut className="w-6 h-6 text-red-500" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         {/* Navigation Tabs */}

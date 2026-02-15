@@ -1,7 +1,8 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, createContext, useContext } from "react";
+import { useEffect, useState } from "react";
+import { useUserRole } from "@/lib/contexts/userRole";
 
 const navigationItems = [
   { href: "/dashboard", label: "Dashboard" },
@@ -11,12 +12,6 @@ const navigationItems = [
   { href: "/account", label: "Account" },
 ];
 
-// Create a context for user role
-type UserRole = "User" | "Healthcare Provider";
-const UserRoleContext = createContext<UserRole>("User");
-
-export const useUserRole = () => useContext(UserRoleContext);
-
 export default function UserLayout({
   children,
 }: {
@@ -24,8 +19,18 @@ export default function UserLayout({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { role, isLoggedIn, setRole, setIsLoggedIn } = useUserRole();
   const [focusedIndex, setFocusedIndex] = useState(0);
-  const [userRole, setUserRole] = useState<"User" | "Healthcare Provider">("User");
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Check if user is logged in and has correct role
+  useEffect(() => {
+    if (!isLoggedIn || role !== "user") {
+      router.replace("/auth");
+    } else {
+      setIsLoading(false);
+    }
+  }, [isLoggedIn, role, router]);
 
   // Find current page index
   useEffect(() => {
@@ -69,7 +74,7 @@ export default function UserLayout({
           break;
         case "Escape":
           e.preventDefault();
-          router.push("/");
+          handleLogout();
           break;
       }
     };
@@ -77,6 +82,16 @@ export default function UserLayout({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [focusedIndex, router]);
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setRole(null);
+    router.push("/auth");
+  };
+
+  if (isLoading) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -114,27 +129,13 @@ export default function UserLayout({
               })}
             </nav>
 
-            {/* Role Toggle */}
+            {/* Logout Button */}
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setUserRole("User")}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 ${
-                  userRole === "User"
-                    ? "bg-primary text-white"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
+                onClick={handleLogout}
+                className="px-4 py-2 text-sm font-medium rounded-md bg-red-600 text-white hover:bg-red-700 transition-all duration-200"
               >
-                User
-              </button>
-              <button
-                onClick={() => setUserRole("Healthcare Provider")}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 ${
-                  userRole === "Healthcare Provider"
-                    ? "bg-secondary text-white"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                Provider
+                Logout
               </button>
             </div>
           </div>
@@ -167,9 +168,7 @@ export default function UserLayout({
 
       {/* Main Content */}
       <main id="main-content" className="flex-1 px-4 py-6 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full">
-        <UserRoleContext.Provider value={userRole}>
-          {children}
-        </UserRoleContext.Provider>
+        {children}
       </main>
     </div>
   );
