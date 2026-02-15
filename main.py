@@ -9,6 +9,24 @@ import json
 import platform
 from datetime import datetime
 
+# ---------------------------------------------------------------------------
+# Suppress ALSA/JACK stderr spam on Linux (must run before any audio import)
+# ---------------------------------------------------------------------------
+if platform.system() == "Linux":
+    try:
+        import ctypes
+        _alsa_lib = ctypes.cdll.LoadLibrary("libasound.so.2")
+        _alsa_err_handler_t = ctypes.CFUNCTYPE(
+            None, ctypes.c_char_p, ctypes.c_int,
+            ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        )
+        @_alsa_err_handler_t
+        def _alsa_noop_handler(filename, line, function, err, fmt):
+            pass
+        _alsa_lib.snd_lib_error_set_handler(_alsa_noop_handler)
+    except Exception:
+        pass  # Not critical — ALSA warnings are just noise
+
 import cv2
 import numpy as np
 import speech_recognition as sr
@@ -74,13 +92,13 @@ def tts_worker():
         print(f"[SPEAKING] {text}")
         try:
             # Generate speech with OpenAI TTS — natural, expressive voice
-            response = client.audio.speech.create(
+            with client.audio.speech.with_streaming_response.create(
                 model="tts-1",
                 voice="nova",
                 input=text,
                 speed=1.1,
-            )
-            response.stream_to_file(TEMP_AUDIO)
+            ) as stream_resp:
+                stream_resp.stream_to_file(TEMP_AUDIO)
 
             # Platform-specific playback
             if current_os == "Darwin":
@@ -731,9 +749,12 @@ def send_frame_to_jetson(frame):
     except http_requests.RequestException:
         return [], DEFAULT_QP.copy()
 
+JETSON_DEBUG_INTERVAL = 10  # seconds between debug prints (0 to disable)
+_jetson_last_debug = 0.0
+
 def jetson_worker():
     """Daemon thread: polls Jetson every JETSON_INTERVAL seconds, triggers motors."""
-    global latest_detections, latest_quadrant_presence
+    global latest_detections, latest_quadrant_presence, _jetson_last_debug
     while True:
         if not JETSON_ENABLED:
             stop_all_motors()
@@ -761,6 +782,16 @@ def jetson_worker():
             trigger_vibration(latest_quadrant_presence)
         else:
             stop_all_motors()
+
+        # Periodic debug logging
+        now = time.time()
+        if JETSON_DEBUG_INTERVAL > 0 and now - _jetson_last_debug >= JETSON_DEBUG_INTERVAL:
+            _jetson_last_debug = now
+            motor_status = get_motor_status()
+            n = len(detections)
+            names = [d.get("class_name", "?") for d in detections[:5]]
+            print(f"[DEBUG JETSON] {n} detection(s): {names} | QP: {qp} | Motors: {motor_status}")
+
         time.sleep(JETSON_INTERVAL)
 
 def get_detection_summary() -> str:
@@ -782,6 +813,45 @@ def get_detection_summary() -> str:
                 pass
         parts.append(f"{name} ({quad}, {dist}, {d.get('distance_zone', '?')})")
     return "Nearby objects detected by sensors: " + ", ".join(parts)
+
+def get_debug_status() -> str:
+    """Build a full debug status string for Jetson, motors, and system health."""
+    parts = []
+
+    # Jetson connection
+    if not JETSON_ENABLED:
+        parts.append("Jetson: disabled.")
+    else:
+        with _detections_lock:
+            dets = list(latest_detections)
+            qp = list(latest_quadrant_presence)
+        parts.append(f"Jetson: enabled at {JETSON_URL}.")
+        if dets:
+            names = [d.get("class_name", "?") for d in dets[:5]]
+            parts.append(f"Detections: {len(dets)} objects — {', '.join(names)}.")
+            parts.append(f"Quadrant presence: {qp}.")
+        else:
+            parts.append("No objects currently detected.")
+
+    # Motor status
+    if not HAS_GPIO or not motors:
+        parts.append("Motors: GPIO not available.")
+    else:
+        motor_vals = get_motor_status()
+        active = {z: v for z, v in motor_vals.items() if v > 0}
+        if active:
+            motor_str = ", ".join(f"{z} at {int(v*100)}%" for z, v in active.items())
+            parts.append(f"Motors active: {motor_str}.")
+        else:
+            parts.append("All motors off.")
+
+    # Camera
+    parts.append(f"Camera: {'OK' if camera and camera.isOpened() else 'not available'}.")
+
+    # RAG memory
+    parts.append(f"RAG memory: {memory_collection.count()} stored interactions.")
+
+    return " ".join(parts)
 
 # ---------------------------------------------------------------------------
 # Vibration Motors — GPIO control (Raspberry Pi only)
@@ -821,6 +891,12 @@ def stop_all_motors():
         return
     for motor in motors.values():
         motor.value = 0.0
+
+def get_motor_status() -> dict:
+    """Return current motor PWM values for debugging."""
+    if not HAS_GPIO or not motors:
+        return {}
+    return {zone: round(motor.value, 2) for zone, motor in motors.items()}
 
 def cleanup_motors():
     """Clean up GPIO on shutdown."""
