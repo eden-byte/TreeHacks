@@ -1049,7 +1049,7 @@ def analyze_image(command: str) -> str:
     for attempt in range(2):
         try:
             response = client.responses.create(
-                model="gpt-5-mini",
+                model="gpt-4o-mini",
                 instructions=system,
                 max_output_tokens=400,
                 input=[
@@ -1134,7 +1134,7 @@ def handle_command(command: str):
         if len(results) > 500:
             try:
                 summary = client.responses.create(
-                    model="gpt-5-mini",
+                    model="gpt-4o-mini",
                     instructions="Summarize this research into 2-4 clear sentences for a blind user listening via text-to-speech. Be specific with key facts.",
                     max_output_tokens=400,
                     input=results,
@@ -1405,7 +1405,7 @@ def handle_command(command: str):
             input_messages = list(get_history_messages())
             input_messages.append({"role": "user", "content": command})
             response = client.responses.create(
-                model="gpt-5-mini",
+                model="gpt-4o-mini",
                 instructions="You are Vera, an AI assistant built into smart glasses for a blind user. Answer in 1-3 short sentences. Speak from the user's perspective.",
                 max_output_tokens=400,
                 input=input_messages,
