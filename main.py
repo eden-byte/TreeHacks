@@ -26,6 +26,9 @@ if platform.system() == "Linux":
         _alsa_lib.snd_lib_error_set_handler(_alsa_noop_handler)
     except Exception:
         pass  # Not critical — ALSA warnings are just noise
+    # Suppress JACK server connection attempts
+    os.environ["JACK_NO_START_SERVER"] = "1"
+    os.environ["JACK_NO_AUDIO_RESERVATION"] = "1"
 
 import cv2
 import numpy as np
@@ -991,24 +994,39 @@ def analyze_image(command: str) -> str:
     if rag_context:
         system += "\n\nRelevant past interactions:\n" + rag_context
 
-    response = client.responses.create(
-        model="gpt-5-mini",
-        instructions=system,
-        max_output_tokens=400,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
+    for attempt in range(2):
+        try:
+            response = client.responses.create(
+                model="gpt-5-mini",
+                instructions=system,
+                max_output_tokens=400,
+                input=[
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/jpeg;base64,{image_b64}",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/jpeg;base64,{image_b64}",
+                            },
+                        ],
                     },
                 ],
-            },
-        ],
-    )
-    result = response.output_text or "Sorry, I couldn't process that."
+            )
+            result = response.output_text
+            if not result:
+                print(f"[ANALYZE WARNING] Empty output_text on attempt {attempt + 1} (status={getattr(response, 'status', 'N/A')})")
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                result = "Sorry, I couldn't process that."
+            break
+        except Exception as e:
+            print(f"[ANALYZE ERROR] Attempt {attempt + 1} failed: {e}")
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            result = "Sorry, I couldn't process that right now."
 
     # Save snapshot + interaction to RAG memory
     image_path = ""
