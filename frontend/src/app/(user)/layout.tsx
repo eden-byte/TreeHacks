@@ -1,8 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { UserRoleContext } from "@/lib/contexts/userRole";
+import { useEffect, useState, createContext, useContext } from "react";
 
 const navigationItems = [
   { href: "/dashboard", label: "Dashboard" },
@@ -12,7 +11,11 @@ const navigationItems = [
   { href: "/account", label: "Account" },
 ];
 
+// Create a context for user role
+type UserRole = "User" | "Healthcare Provider";
+const UserRoleContext = createContext<UserRole>("User");
 
+export const useUserRole = () => useContext(UserRoleContext);
 
 export default function UserLayout({
   children,
@@ -89,7 +92,7 @@ export default function UserLayout({
             {/* Navigation Menu */}
             <nav className="hidden md:flex items-center gap-1">
               <h2 className="sr-only">Navigation Menu</h2>
-              {navigationItems.map((item) => {
+              {navigationItems.map((item, index) => {
                 const isActive = pathname === item.href;
 
                 return (
