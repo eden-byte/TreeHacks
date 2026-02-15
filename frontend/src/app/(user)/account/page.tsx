@@ -2,7 +2,8 @@
 
 import { motion } from "framer-motion";
 import { User, Bell, Shield, CreditCard, Check } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useUserRole } from "../layout";
 
 const pricingTiers = [
   {
@@ -39,10 +40,70 @@ const pricingTiers = [
 ];
 
 export default function AccountPage() {
+  const userRole = useUserRole();
   const [activeTab, setActiveTab] = useState<"profile" | "pricing" | "settings">("profile");
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Check for success or cancel from Stripe redirect
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("success")) {
+      setMessage({ type: "success", text: "Payment successful! Your premium subscription is now active." });
+    } else if (urlParams.get("canceled")) {
+      setMessage({ type: "error", text: "Payment canceled. You can try again anytime." });
+    }
+  }, []);
+
+  const handleUpgrade = async () => {
+    setIsLoading(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          priceId: "price_premium", // Replace with your actual Stripe price ID
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.url) {
+        // Redirect to Stripe checkout
+        window.location.href = data.url;
+      } else {
+        throw new Error(data.error || "Failed to create checkout session");
+      }
+    } catch (error: any) {
+      setMessage({ type: "error", text: error.message || "Something went wrong. Please try again." });
+      setIsLoading(false);
+    }
+  };
+
+  // Only show pricing/upgrade in User mode
+  const showUpgrade = userRole === "User";
 
   return (
     <div className="max-w-5xl mx-auto">
+      {/* Success/Error Message */}
+      {message && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`mb-6 p-4 rounded-lg ${
+            message.type === "success"
+              ? "bg-secondary/20 border-2 border-secondary text-secondary"
+              : "bg-red-500/20 border-2 border-red-500 text-red-500"
+          }`}
+        >
+          <p className="font-semibold">{message.text}</p>
+        </motion.div>
+      )}
+
       {/* Page Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -178,9 +239,16 @@ export default function AccountPage() {
                         ? "btn-secondary"
                         : "btn-primary"
                     }`}
-                    disabled={tier.current}
+                    disabled={tier.current || isLoading || !showUpgrade}
+                    onClick={() => !tier.current && showUpgrade && handleUpgrade()}
                   >
-                    {tier.current ? "Current Plan" : "Upgrade to Premium"}
+                    {isLoading && !tier.current
+                      ? "Loading..."
+                      : tier.current
+                      ? "Current Plan"
+                      : showUpgrade
+                      ? "Upgrade to Premium"
+                      : "Not Available"}
                   </button>
                 </div>
               </motion.div>

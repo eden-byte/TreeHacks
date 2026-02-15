@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Video, Camera, Mic, Volume2, Navigation } from "lucide-react";
 import { useState, useEffect } from "react";
+import { useUserRole } from "../layout";
 
 interface MotorState {
   id: number;
@@ -50,6 +51,7 @@ const getOpacity = (intensity: number) => {
 };
 
 export default function DashboardPage() {
+  const userRole = useUserRole();
   const [isCameraActive, setIsCameraActive] = useState(true);
   const [isMicActive, setIsMicActive] = useState(true);
   const [isSoundActive, setIsSoundActive] = useState(true);
@@ -104,6 +106,11 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
+  // Only show content for Healthcare Provider mode
+  if (userRole !== "Healthcare Provider") {
+    return null;
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* Page Header */}
@@ -113,7 +120,7 @@ export default function DashboardPage() {
         transition={{ duration: 0.5 }}
         className="mb-6"
       >
-        <h1 className="text-4xl font-bold text-white mb-2">
+        <h1 className="text-4xl font-bold text-text-primary mb-2">
           Live Camera Feed
         </h1>
         <p className="text-lg text-text-secondary">
@@ -222,7 +229,7 @@ export default function DashboardPage() {
           className="flex flex-col"
         >
           <div className="card p-6 flex-1 bg-gradient-to-br from-primary/5 to-secondary/5">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+            <h2 className="text-2xl font-bold text-text-primary mb-4 flex items-center gap-2">
               <Navigation className="w-6 h-6" />
               <span>Haptic Feedback</span>
             </h2>

@@ -9,47 +9,47 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Dark theme color palette (WCAG compliant)
+        // Light theme color palette (WCAG compliant)
         primary: {
-          DEFAULT: "#60A5FA", // Bright Blue
-          light: "#93C5FD",   // Light Blue
-          dark: "#3B82F6",    // Medium Blue
+          DEFAULT: "#2563EB", // Vera brand blue (darker on light bg)
+          light: "#60A5FA",
+          dark: "#1D4ED8",
         },
         secondary: {
-          DEFAULT: "#10b981", // Green (success)
+          DEFAULT: "#059669",
           light: "#34d399",
-          dark: "#059669",
+          dark: "#047857",
         },
         accent: {
-          DEFAULT: "#F59E0B", // Amber
-          light: "#FCD34D",
-          dark: "#D97706",
+          DEFAULT: "#B45309",
+          light: "#F59E0B",
+          dark: "#92400E",
         },
         background: {
-          DEFAULT: "#111827", // Very Dark Gray (page background)
-          dark: "#0F172A",    // Even darker
-          light: "#1F2937",   // Slightly lighter (for sections)
+          DEFAULT: "#F8FAFC", // Very light page background
+          dark: "#EEF2FF",
+          light: "#FFFFFF",
         },
         surface: {
-          DEFAULT: "#1F2937", // Dark Gray (card background)
-          elevated: "#374151", // Medium Dark Gray (elevated cards)
-          light: "#4B5563",   // Lighter surface
+          DEFAULT: "#FFFFFF",   // Card / surface background
+          elevated: "#F8FAFF",  // Slight elevation
+          light: "#F3F4F6",     // Subtle surfaces
         },
         text: {
-          primary: "#F9FAFB",   // Almost White
-          secondary: "#D1D5DB", // Light Gray
-          tertiary: "#9CA3AF",  // Medium Gray
-          inverse: "#111827",   // Dark (for light backgrounds)
+          primary: "#0F172A",   // Dark text for readability
+          secondary: "#475569", // Muted text
+          tertiary: "#6B7280",  // Secondary muted
+          inverse: "#F8FAFC",   // Light (for dark-on-light swaps)
         },
         border: {
-          DEFAULT: "#374151",   // Medium Dark Gray
-          light: "#4B5563",     // Lighter border
-          focus: "#60A5FA",     // Blue for focus indicators
+          DEFAULT: "#E6E8EB",   // Light border
+          light: "#E5E7EB",
+          focus: "#2563EB",     // Blue for focus indicators
         },
         vera: {
-          blue: "#60A5FA",      // Vera brand blue
-          navy: "#1E3A8A",      // Deep navy
-          cyan: "#06B6D4",      // Cyan accent
+          blue: "#2563EB",
+          navy: "#1E3A8A",
+          cyan: "#06B6D4",
         },
       },
       fontFamily: {
