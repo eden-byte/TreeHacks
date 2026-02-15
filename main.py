@@ -1,5 +1,7 @@
 import os
 import sys
+import platform
+import signal
 import base64
 import threading
 import time
@@ -37,6 +39,8 @@ TEMP_AUDIO = os.path.join(BASE_DIR, "_tts_temp.mp3")
 def tts_worker():
     """Dedicated thread that processes speech requests using OpenAI TTS."""
     global current_tts_process
+    current_os = platform.system()
+
     while True:
         text = speech_queue.get()
         if text is None:
@@ -44,42 +48,62 @@ def tts_worker():
         print(f"[SPEAKING] {text}")
         try:
             # Generate speech with OpenAI TTS — natural, expressive voice
-            response = client.audio.speech.create(
+            with client.audio.speech.with_streaming_response.create(
                 model="tts-1",
                 voice="nova",
                 input=text,
-                speed=1.1,
-            )
-            response.stream_to_file(TEMP_AUDIO)
-            # Play MP3 using PowerShell MediaPlayer (supports mp3 natively)
-            audio_path = TEMP_AUDIO.replace("'", "''")
-            proc = subprocess.Popen(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName PresentationCore; "
-                 f"$p = New-Object System.Windows.Media.MediaPlayer; "
-                 f"$p.Open([uri]'{audio_path}'); "
-                 f"$p.Play(); "
-                 f"Start-Sleep -Milliseconds 500; "
-                 f"while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
-                 f"$p.Close()"],
-                creationflags=0x08000000
-            )
+                speed=1.0,
+            ) as response:
+                response.stream_to_file(TEMP_AUDIO)
+
+            # Play MP3 using OS-appropriate method
+            if current_os == "Darwin":  # macOS
+                # Use afplay (built-in on macOS)
+                proc = subprocess.Popen(["afplay", TEMP_AUDIO])
+            elif current_os == "Windows":
+                # Use PowerShell MediaPlayer (supports mp3 natively)
+                audio_path = TEMP_AUDIO.replace("'", "''")
+                proc = subprocess.Popen(
+                    ["powershell", "-Command",
+                     f"Add-Type -AssemblyName PresentationCore; "
+                     f"$p = New-Object System.Windows.Media.MediaPlayer; "
+                     f"$p.Open([uri]'{audio_path}'); "
+                     f"$p.Play(); "
+                     f"Start-Sleep -Milliseconds 500; "
+                     f"while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
+                     f"$p.Close()"],
+                    creationflags=0x08000000
+                )
+            else:  # Linux or other
+                # Try mpg123 or ffplay
+                try:
+                    proc = subprocess.Popen(["mpg123", "-q", TEMP_AUDIO])
+                except FileNotFoundError:
+                    proc = subprocess.Popen(["ffplay", "-nodisp", "-autoexit", TEMP_AUDIO])
+
             with tts_process_lock:
                 current_tts_process = proc
             proc.wait()
             with tts_process_lock:
                 current_tts_process = None
         except Exception as e:
-            print(f"[TTS ERROR] {e} — falling back to Windows TTS")
-            # Fallback to Windows TTS if OpenAI fails
-            safe = text.replace("'", "''")
-            proc = subprocess.Popen(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName System.Speech; "
-                 f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                 f"$s.Rate = 2; $s.Speak('{safe}')"],
-                creationflags=0x08000000
-            )
+            print(f"[TTS ERROR] {e} — falling back to system TTS")
+            # Fallback to system TTS if OpenAI fails
+            if current_os == "Darwin":  # macOS
+                safe = text.replace('"', '\\"')
+                proc = subprocess.Popen(["say", text])
+            elif current_os == "Windows":
+                safe = text.replace("'", "''")
+                proc = subprocess.Popen(
+                    ["powershell", "-Command",
+                     f"Add-Type -AssemblyName System.Speech; "
+                     f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                     f"$s.Rate = 2; $s.Speak('{safe}')"],
+                    creationflags=0x08000000
+                )
+            else:  # Linux
+                proc = subprocess.Popen(["espeak", text])
+
             with tts_process_lock:
                 current_tts_process = proc
             proc.wait()
@@ -93,12 +117,9 @@ def speak(text: str):
 def stop_speaking():
     """Kill current TTS and clear the queue."""
     global current_tts_process
-    # Clear all pending speech
-    while not speech_queue.empty():
-        try:
-            speech_queue.get_nowait()
-        except queue.Empty:
-            break
+    # Clear all pending speech atomically
+    with speech_queue.mutex:
+        speech_queue.queue.clear()
     # Kill current TTS process
     with tts_process_lock:
         if current_tts_process and current_tts_process.poll() is None:
@@ -972,6 +993,23 @@ def main():
 
     # Main thread: webcam preview
     print("[PREVIEW] Webcam window open. Press 'q' in the window to quit.")
+
+    def signal_handler(sig, frame):
+        """Handle Ctrl+C gracefully."""
+        print("\n[SHUTDOWN] Stopping Vera...")
+        camera.release()
+        cv2.destroyAllWindows()
+        # Delete temp audio file
+        if os.path.exists(TEMP_AUDIO):
+            try:
+                os.remove(TEMP_AUDIO)
+            except:
+                pass
+        print("[CLEANUP] Done. Goodbye!")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     try:
         while True:
             update_frame()
@@ -986,6 +1024,12 @@ def main():
     finally:
         camera.release()
         cv2.destroyAllWindows()
+        # Delete temp audio file
+        if os.path.exists(TEMP_AUDIO):
+            try:
+                os.remove(TEMP_AUDIO)
+            except:
+                pass
         print("[CLEANUP] Camera released.")
 
 if __name__ == "__main__":
