@@ -197,6 +197,58 @@ def get_history_messages() -> list:
     return list(conversation_history)
 
 # ---------------------------------------------------------------------------
+# Reset Vera — wipe all memory and state, behave like new
+# ---------------------------------------------------------------------------
+def reset_vera():
+    """Clear all Vera state: conversation history, RAG memory, faces, research, snapshots."""
+    global conversation_history, research_results
+
+    print("[RESET] Resetting Vera to factory state...")
+
+    # 1. Clear conversation history
+    conversation_history.clear()
+    print("[RESET] Conversation history cleared.")
+
+    # 2. Clear ChromaDB RAG memory
+    try:
+        ids = memory_collection.get()["ids"]
+        if ids:
+            memory_collection.delete(ids=ids)
+        print(f"[RESET] RAG memory cleared ({len(ids)} entries removed).")
+    except Exception as e:
+        print(f"[RESET WARNING] Could not clear RAG memory: {e}")
+
+    # 3. Clear face database and encodings
+    try:
+        if os.path.exists(FACES_DB_FILE):
+            os.remove(FACES_DB_FILE)
+        if os.path.exists(ENCODINGS_FILE):
+            os.remove(ENCODINGS_FILE)
+        # Remove all saved face images
+        import glob
+        for f in glob.glob(os.path.join(FACES_DIR, "*.jpg")):
+            os.remove(f)
+        print("[RESET] Face database and encodings cleared.")
+    except Exception as e:
+        print(f"[RESET WARNING] Could not clear faces: {e}")
+
+    # 4. Clear research results
+    with research_lock:
+        research_results.clear()
+    print("[RESET] Research results cleared.")
+
+    # 5. Clear snapshots
+    try:
+        import glob
+        for f in glob.glob(os.path.join(SNAPSHOTS_DIR, "*.jpg")):
+            os.remove(f)
+        print("[RESET] Snapshots cleared.")
+    except Exception as e:
+        print(f"[RESET WARNING] Could not clear snapshots: {e}")
+
+    print("[RESET] Vera has been fully reset.")
+
+# ---------------------------------------------------------------------------
 # Deep Research — background Perplexity queries with sonar-deep-research
 # ---------------------------------------------------------------------------
 research_results = {}  # {question: {"status": "pending"|"done", "answer": str}}
@@ -752,7 +804,7 @@ def send_frame_to_jetson(frame):
     except http_requests.RequestException:
         return [], DEFAULT_QP.copy()
 
-JETSON_DEBUG_INTERVAL = 10  # seconds between debug prints (0 to disable)
+JETSON_DEBUG_INTERVAL = 1  # seconds between debug prints (0 to disable)
 _jetson_last_debug = 0.0
 
 def jetson_worker():
@@ -1051,6 +1103,13 @@ recognizer.pause_threshold = 0.8
 def handle_command(command: str):
     """Process a voice command — face registration, people questions, or image analysis."""
     lower = command.lower()
+
+    # Reset Vera: "reset vera"
+    if "reset vera" in lower:
+        speak("Resetting everything. I'll be like new in a moment.")
+        reset_vera()
+        speak("All done. I've forgotten everything. It's nice to meet you! Say Hey Vera whenever you need me.")
+        return
 
     # Deep research: "research X" or "deep dive into X"
     research_triggers = ["research ", "deep dive ", "look into ", "investigate "]

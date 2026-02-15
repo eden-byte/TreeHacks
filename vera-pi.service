@@ -1,0 +1,21 @@
+[Unit]
+Description=Vera Vision Assistant (Raspberry Pi)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/vera
+EnvironmentFile=/home/pi/vera/.env
+Environment=PATH=/home/pi/vera/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VERA_HEADLESS=true
+ExecStartPre=/bin/sleep 5
+ExecStart=/home/pi/vera/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
