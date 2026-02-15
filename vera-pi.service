@@ -1,11 +1,9 @@
 [Unit]
 Description=Vera Vision Assistant (Raspberry Pi)
-After=network-online.target sound.target
-Wants=network-online.target
+After=default.target pulseaudio.service pipewire.service
 
 [Service]
 Type=simple
-User=pi
 WorkingDirectory=/home/pi/vera
 EnvironmentFile=/home/pi/vera/.env
 Environment=PATH=/home/pi/vera/venv/bin:/usr/local/bin:/usr/bin:/bin
@@ -18,4 +16,4 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
