@@ -1,0 +1,211 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Inter font from Google Fonts */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  /* Base accessibility styles */
+  * {
+    @apply outline-none;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-background text-text-primary antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  /* High contrast focus indicators for accessibility */
+  *:focus-visible {
+    @apply ring-4 ring-border-focus ring-offset-2 ring-offset-background outline-none;
+  }
+
+  /* Ensure all interactive elements have proper focus styles */
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    @apply ring-4 ring-border-focus ring-offset-2;
+  }
+
+  /* Remove focus ring for mouse users but keep for keyboard users */
+  *:focus:not(:focus-visible) {
+    @apply ring-0 ring-offset-0;
+  }
+
+  /* Skip to main content link for screen readers */
+  .skip-link {
+    @apply absolute -top-12 left-0 bg-primary text-white px-6 py-3 text-lg font-semibold z-50 transition-all rounded-lg;
+  }
+
+  .skip-link:focus {
+    @apply top-4;
+  }
+
+  /* Scrollbar styling for dark theme */
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-elevated rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-surface-light;
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Ensure text remains visible during webfont load */
+  @font-face {
+    font-display: swap;
+  }
+}
+
+@layer components {
+  /* Accessible button base styles */
+  .btn {
+    @apply inline-flex items-center justify-center min-h-touch min-w-touch px-6 py-3
+           text-base font-semibold rounded-lg transition-all duration-200
+           focus-visible:ring-4 focus-visible:ring-border-focus focus-visible:ring-offset-2;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-primary-light active:scale-95 shadow-lg shadow-primary/20;
+  }
+
+  .btn-secondary {
+    @apply bg-surface-elevated border-2 border-border-light text-text-primary hover:bg-surface-light
+           active:scale-95;
+  }
+
+  .btn-large {
+    @apply text-xl px-8 py-4 min-h-[56px];
+  }
+
+  /* Accessible card component */
+  .card {
+    @apply bg-surface border border-border rounded-xl p-6 shadow-lg
+           transition-all duration-200 hover:shadow-xl hover:border-border-light;
+  }
+
+  .card-accessible {
+    @apply card focus-within:ring-2 focus-within:ring-border-focus
+           focus-within:ring-offset-2 focus-within:ring-offset-background cursor-pointer
+           hover:scale-[1.02];
+  }
+
+  .card-elevated {
+    @apply bg-surface-elevated border border-border-light;
+  }
+
+  /* Input fields with accessibility focus */
+  .input {
+    @apply w-full px-4 py-3 text-base border-2 border-border rounded-lg
+           bg-surface text-text-primary placeholder-text-secondary
+           transition-colors duration-200
+           focus:border-border-focus focus:ring-4 focus:ring-border-focus
+           focus:ring-offset-0;
+  }
+
+  .input-large {
+    @apply input text-lg px-6 py-4 min-h-touch;
+  }
+
+  /* High contrast mode support */
+  @media (prefers-contrast: high) {
+    .btn {
+      @apply border-2 border-text-primary;
+    }
+
+    .card {
+      @apply border-4;
+    }
+  }
+
+  /* Screen reader only content */
+  .sr-only {
+    @apply absolute w-px h-px p-0 -m-px overflow-hidden whitespace-nowrap border-0;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  /* Focus trap for modals */
+  .focus-trap {
+    @apply fixed inset-0 z-40 overflow-y-auto;
+  }
+}
+
+@layer utilities {
+  /* Custom utility classes */
+  .text-contrast-high {
+    color: #000000;
+  }
+
+  .bg-contrast-high {
+    background-color: #ffffff;
+  }
+
+  /* Loading states */
+  .skeleton {
+    @apply animate-pulse bg-surface-elevated rounded;
+  }
+
+  /* Gradient backgrounds */
+  .gradient-radial {
+    background: radial-gradient(circle at center, rgba(96, 165, 250, 0.1) 0%, transparent 70%);
+  }
+
+  .gradient-blue-glow {
+    box-shadow: 0 0 50px rgba(96, 165, 250, 0.15);
+  }
+
+  /* Icon containers */
+  .icon-container {
+    @apply w-16 h-16 rounded-xl flex items-center justify-center bg-primary/10 border border-primary/20;
+  }
+
+  .icon-container-large {
+    @apply w-24 h-24 rounded-2xl flex items-center justify-center bg-primary/10 border border-primary/20;
+  }
+
+  /* Motor visualization specific styles */
+  .motor-disk {
+    @apply w-16 h-16 rounded-full bg-white shadow-lg flex items-center justify-center;
+  }
+
+  .motor-disk-active {
+    @apply motor-disk bg-white;
+  }
+
+  /* Bounding box overlay styles */
+  .bbox {
+    @apply absolute border-2 border-secondary pointer-events-none;
+  }
+
+  .bbox-label {
+    @apply absolute -top-6 left-0 bg-secondary text-white text-xs px-2 py-1 rounded;
+  }
+}
