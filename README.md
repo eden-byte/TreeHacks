@@ -10,25 +10,15 @@ Built at TreeHacks 2026
 
 ## What We Built
 
-An AI-native assistive vision system for the visually impaired:
+An AI-native assistive vision system that provides:
 
-- **AI Vision Intelligence**: Identifies currency, colors, text, and obstacles (not just proximity)
+- **AI Vision Intelligence**: Identifies currency, colors, text, and obstacles in real-time
 - **Multi-Zone Haptic Feedback**: 5-direction vibration necklace for spatial awareness
-- **Conversational AI Assistant**: Voice interface with real-time scene understanding
-- **Medical Integration**: Vitals monitoring, medication checking, emergency detection
-- **Cloud-Native Scale**: Modal sandboxes enable massive concurrent usage
+- **Conversational AI Assistant**: Voice interface with scene understanding
+- **Medical Integration**: Medication safety checking and vitals monitoring
+- **Cloud-Native Scale**: Scalable architecture using Modal sandboxes
 
-### Sunu (2017) → Our AI-Native Version (2026)
-
-| Feature | Sunu (2017) | Sunu 2.0 (2026) |
-|---------|-------------|-----------------|
-| **Detection** | Sonar proximity only | AI vision: objects, text, colors, obstacles |
-| **Feedback** | Single wrist vibration | 5-zone directional haptic necklace |
-| **Interface** | Hardware-only | Voice + haptics + vision |
-| **Intelligence** | Distance measurement | Scene understanding + medical context |
-| **Architecture** | $299 standalone device | $300 glasses + $5/month cloud AI |
-| **Scalability** | One device per user | Modal sandboxes → unlimited users |
-| **Personalization** | One-size-fits-all | AI learns each user's needs |
+## Key Capabilities
 
 ## Architecture
 
@@ -95,25 +85,23 @@ An AI-native assistive vision system for the visually impaired:
 - Custom 5-zone vibration necklace
 - Arduino/ESP32 (Haptic motor control)
 
-## Key Features
+## Key Capabilities
 
 ### AI Vision Intelligence
 
-Sunu's limitation: Could only detect that something was there.
-Our solution: Full scene understanding.
+Real-time object and scene understanding using computer vision and AI.
 
 ```python
 # User holds up object to glasses camera
 → AI Vision Processing
 → "This is a twenty dollar bill"
-→ "Prescription bottle: Ibuprofen 200mg - WARNING: You're allergic to NSAIDs"
+→ "Prescription bottle: Ibuprofen 200mg"
 → "Red shirt, medium size"
 ```
 
 ### Multi-Zone Haptic Navigation
 
-Sunu's limitation: Single wrist vibration point.
-Our solution: 5-zone spatial mapping.
+5-zone vibration necklace provides directional obstacle awareness.
 
 ```
 Vibration Zones:
@@ -126,8 +114,7 @@ Clear path ahead → All motors off
 
 ### Conversational AI Assistant
 
-Sunu's limitation: No ability to answer questions.
-Our solution: Natural voice interaction.
+Natural voice interaction for questions and guidance.
 
 ```
 User: "What am I looking at?"
@@ -138,64 +125,44 @@ AI: "Navy blue"
 
 User: "Can I take this medicine?"
 AI: "This is ibuprofen. Checking your medical history... 
-     WARNING: You have a documented allergy to NSAIDs. Do not take this."
+     WARNING: You have a documented allergy to NSAIDs."
 ```
 
 ### Medical Integration
 
-Sunu's limitation: No health monitoring.
-Our solution: Continuous health and safety.
+Continuous health monitoring and medication safety.
 
-- Medication Safety: OCR prescription labels + drug interaction checking
-- Vitals Monitoring: Heart rate, movement patterns from necklace sensors
+- Medication Safety: OCR prescription labels with drug interaction checking
+- Vitals Monitoring: Heart rate and movement patterns from necklace sensors
 - Fall Detection: Automatic emergency alerts
-- Provider Dashboard: Healthcare workers see near-miss events, location logs
+- Provider Dashboard: Healthcare professionals can view safety events and location logs
 
-### Cloud-Native Scalability
+### Scalable Cloud Architecture
 
-Sunu's limitation: One device per user, hardware scaling.
-Our solution: Modal sandboxes for unlimited users.
+Modal sandboxes provide personalized AI for each user.
 
 ```python
 # Each user gets isolated AI sandbox
 @app.function(gpu="T4", secrets=[...])
 def user_vision_sandbox(user_id: str, image: bytes):
     """
-    Personalized AI processing per user:
-    - Learns user preferences (pharmacy = CVS on 34th St)
-    - Stores medical context (allergies, prescriptions)
-    - Adapts to environment (NYC subway vs rural roads)
+    Personalized AI processing:
+    - Learns user preferences
+    - Stores medical context
+    - Adapts to environment
     """
     return personalized_results
-
-# Modal auto-scales: 1 user or 50,000 users
 ```
 
-## The Transformation
+## Impact
 
-### Business Model Evolution
+This system addresses the needs of 285 million visually impaired people worldwide by providing:
 
-| Metric | Sunu (2017) | Sunu 2.0 (2026) |
-|--------|-------------|-----------------|
-| **Hardware Cost** | $299 per user | $300 glasses (reusable) |
-| **Revenue Model** | One-time purchase | $5-10/month subscription |
-| **Total Cost (5yr)** | $299 | $300 + $300-600 = $600-900 |
-| **Gross Margin** | ~40% (hardware) | ~80% (software) |
-| **Scalability** | Linear (1 device = 1 user) | Exponential (cloud serves all) |
-| **Updates** | Requires new hardware | OTA software updates |
-| **Market Reach** | Thousands | Millions |
-
-### Impact at Scale
-
-**Sunu's Achievement (2017-2024):**
-- ~5,000 users in 50+ countries
-- $937K revenue since launch
-- 90% reduction in accidents for users
-
-**Our Potential (2026+):**
-- 285 million visually impaired people worldwide
-- $5/month × 1M users = $60M ARR
-- TAM: $17B+ (285M × $5/month × 12 months)
+- Independent navigation in unfamiliar environments
+- Real-time object and obstacle identification
+- Medication safety and health monitoring
+- Emergency detection and response
+- Affordable, scalable access to AI assistance ($5-10/month vs $30,000 for guide dogs)
 
 ## Getting Started
 
@@ -246,10 +213,6 @@ python test_haptics.py
 # Test full system
 python main.py --demo
 ```
-
-## Team
-
-Built at TreeHacks 2026 by [Your Team Name]
 
 ## License
 
