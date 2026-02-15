@@ -1,0 +1,10 @@
+flask>=3.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+numpy>=1.24.0
+opencv-python>=4.9.0
+PyYAML>=5.3.1
+# onnxruntime-gpu is used by DepthEstimator for monocular depth estimation (optional)
+# If depth is disabled in config.yaml, this is not needed.
+onnxruntime-gpu>=1.15.0

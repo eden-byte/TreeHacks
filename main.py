@@ -6,6 +6,7 @@ import time
 import queue
 import subprocess
 import json
+import platform
 from datetime import datetime
 
 import cv2
@@ -14,10 +15,33 @@ import speech_recognition as sr
 from openai import OpenAI
 from dotenv import load_dotenv
 import chromadb
-import face_recognition
+import mediapipe as mp
+import onnxruntime as ort
+import requests as http_requests
 from pyzbar.pyzbar import decode as decode_barcodes
 
+# Optional GPIO support (only available on Raspberry Pi)
+try:
+    from gpiozero import PWMOutputDevice
+    HAS_GPIO = True
+except ImportError:
+    HAS_GPIO = False
+
 load_dotenv(override=True)
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+def detect_platform() -> bool:
+    """Detect if running on Raspberry Pi."""
+    try:
+        with open("/proc/device-tree/model") as f:
+            return "raspberry pi" in f.read().lower()
+    except FileNotFoundError:
+        return False
+
+IS_PI = detect_platform()
+HEADLESS = os.getenv("VERA_HEADLESS", str(IS_PI)).lower() == "true"
 
 client = OpenAI()
 perplexity_client = OpenAI(
@@ -29,14 +53,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 # Text-to-Speech — dedicated thread so it never blocks anything
 # ---------------------------------------------------------------------------
-speech_queue = queue.Queue()
+speech_queue = queue.Queue(maxsize=10)
 current_tts_process = None
 tts_process_lock = threading.Lock()
-TEMP_AUDIO = os.path.join(BASE_DIR, "_tts_temp.mp3")
+
+# Use RAM disk on Linux (avoids SD card wear on Pi), project dir otherwise
+if platform.system() == "Linux" and os.path.isdir("/dev/shm"):
+    TEMP_AUDIO = "/dev/shm/_vera_tts_temp.mp3"
+else:
+    TEMP_AUDIO = os.path.join(BASE_DIR, "_tts_temp.mp3")
 
 def tts_worker():
     """Dedicated thread that processes speech requests using OpenAI TTS."""
     global current_tts_process
+    current_os = platform.system()
     while True:
         text = speech_queue.get()
         if text is None:
@@ -51,43 +81,66 @@ def tts_worker():
                 speed=1.1,
             )
             response.stream_to_file(TEMP_AUDIO)
-            # Play MP3 using PowerShell MediaPlayer (supports mp3 natively)
-            audio_path = TEMP_AUDIO.replace("'", "''")
-            proc = subprocess.Popen(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName PresentationCore; "
-                 f"$p = New-Object System.Windows.Media.MediaPlayer; "
-                 f"$p.Open([uri]'{audio_path}'); "
-                 f"$p.Play(); "
-                 f"Start-Sleep -Milliseconds 500; "
-                 f"while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
-                 f"$p.Close()"],
-                creationflags=0x08000000
-            )
+
+            # Platform-specific playback
+            if current_os == "Darwin":
+                proc = subprocess.Popen(["afplay", TEMP_AUDIO])
+            elif current_os == "Windows":
+                audio_path = TEMP_AUDIO.replace("'", "''")
+                proc = subprocess.Popen(
+                    ["powershell", "-Command",
+                     f"Add-Type -AssemblyName PresentationCore; "
+                     f"$p = New-Object System.Windows.Media.MediaPlayer; "
+                     f"$p.Open([uri]'{audio_path}'); "
+                     f"$p.Play(); "
+                     f"Start-Sleep -Milliseconds 500; "
+                     f"while($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
+                     f"$p.Close()"],
+                    creationflags=0x08000000
+                )
+            else:
+                # Linux / Raspberry Pi
+                try:
+                    proc = subprocess.Popen(["mpg123", "-q", TEMP_AUDIO])
+                except FileNotFoundError:
+                    proc = subprocess.Popen(["ffplay", "-nodisp", "-autoexit", TEMP_AUDIO])
+
             with tts_process_lock:
                 current_tts_process = proc
             proc.wait()
             with tts_process_lock:
                 current_tts_process = None
         except Exception as e:
-            print(f"[TTS ERROR] {e} — falling back to Windows TTS")
-            # Fallback to Windows TTS if OpenAI fails
-            safe = text.replace("'", "''")
-            proc = subprocess.Popen(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName System.Speech; "
-                 f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                 f"$s.Rate = 2; $s.Speak('{safe}')"],
-                creationflags=0x08000000
-            )
-            with tts_process_lock:
-                current_tts_process = proc
-            proc.wait()
-            with tts_process_lock:
-                current_tts_process = None
+            print(f"[TTS ERROR] {e} — falling back to system TTS")
+            safe = text.replace("'", "''").replace('"', '\\"')
+            try:
+                if current_os == "Darwin":
+                    proc = subprocess.Popen(["say", safe])
+                elif current_os == "Windows":
+                    proc = subprocess.Popen(
+                        ["powershell", "-Command",
+                         f"Add-Type -AssemblyName System.Speech; "
+                         f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                         f"$s.Rate = 2; $s.Speak('{safe}')"],
+                        creationflags=0x08000000
+                    )
+                else:
+                    proc = subprocess.Popen(["espeak", safe])
+                with tts_process_lock:
+                    current_tts_process = proc
+                proc.wait()
+                with tts_process_lock:
+                    current_tts_process = None
+            except Exception as e2:
+                print(f"[TTS FALLBACK ERROR] {e2}")
 
 def speak(text: str):
-    """Queue text to be spoken (safe to call from any thread)."""
+    """Queue text to be spoken (safe to call from any thread). Drops oldest if full."""
+    if speech_queue.full():
+        try:
+            speech_queue.get_nowait()
+        except queue.Empty:
+            pass
     speech_queue.put(text)
 
 def stop_speaking():
@@ -260,13 +313,40 @@ def save_snapshot(frame) -> str:
     return filepath
 
 # ---------------------------------------------------------------------------
-# Face Recognition — local face database using OpenCV
+# Face Recognition — MediaPipe detection + MobileFaceNet ONNX embedding
 # ---------------------------------------------------------------------------
 FACES_DIR = os.path.join(BASE_DIR, "known_faces")
 FACES_DB_FILE = os.path.join(BASE_DIR, "faces_db.json")
 os.makedirs(FACES_DIR, exist_ok=True)
 
 ENCODINGS_FILE = os.path.join(BASE_DIR, "face_encodings.json")
+MOBILEFACENET_PATH = os.path.join(BASE_DIR, "mobilefacenet.onnx")
+FACE_MATCH_THRESHOLD = 0.5  # cosine similarity (higher = stricter)
+
+# MediaPipe face detector (short-range, optimized for ARM)
+_mp_face_detection = mp.solutions.face_detection
+_face_detector = _mp_face_detection.FaceDetection(
+    model_selection=0,  # 0=short-range (<2m), 1=long-range (<5m)
+    min_detection_confidence=0.5,
+)
+
+# MobileFaceNet ONNX session (loaded lazily)
+_face_embedding_session = None
+
+def _get_face_session():
+    """Lazy-load MobileFaceNet ONNX model."""
+    global _face_embedding_session
+    if _face_embedding_session is None:
+        if not os.path.exists(MOBILEFACENET_PATH):
+            print(f"[FACE WARNING] MobileFaceNet model not found at {MOBILEFACENET_PATH}")
+            print("[FACE WARNING] Face recognition disabled. Run setup_pi.sh to download the model.")
+            return None
+        _face_embedding_session = ort.InferenceSession(
+            MOBILEFACENET_PATH,
+            providers=["CPUExecutionProvider"],
+        )
+        print("[FACE] MobileFaceNet ONNX model loaded.")
+    return _face_embedding_session
 
 def load_faces_db() -> dict:
     if os.path.exists(FACES_DB_FILE):
@@ -295,34 +375,121 @@ def save_encodings_db(db: dict):
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 def detect_faces(frame):
-    """Detect face locations using dlib (via face_recognition)."""
+    """Detect face locations using MediaPipe. Returns list of (top, right, bottom, left)."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    locations = face_recognition.face_locations(rgb, model="hog")
+    results = _face_detector.process(rgb)
+    if not results.detections:
+        return []
+
+    h, w = frame.shape[:2]
+    locations = []
+    for detection in results.detections:
+        bbox = detection.location_data.relative_bounding_box
+        x1 = max(0, int(bbox.xmin * w))
+        y1 = max(0, int(bbox.ymin * h))
+        x2 = min(w, int((bbox.xmin + bbox.width) * w))
+        y2 = min(h, int((bbox.ymin + bbox.height) * h))
+        locations.append((y1, x2, y2, x1))  # (top, right, bottom, left) — same format as dlib
     return locations
 
+def _align_face(frame, detection):
+    """Align a face using MediaPipe eye keypoints + affine transform → 112x112 RGB."""
+    h, w = frame.shape[:2]
+    kps = detection.location_data.relative_keypoints
+    # MediaPipe keypoint indices: 0=right_eye, 1=left_eye
+    left_eye = (int(kps[1].x * w), int(kps[1].y * h))
+    right_eye = (int(kps[0].x * w), int(kps[0].y * h))
+
+    # Compute angle between eyes
+    dx = right_eye[0] - left_eye[0]
+    dy = right_eye[1] - left_eye[1]
+    angle = np.degrees(np.arctan2(dy, dx))
+
+    # Center between eyes
+    eye_center = ((left_eye[0] + right_eye[0]) // 2, (left_eye[1] + right_eye[1]) // 2)
+
+    # Desired eye positions in 112x112 output (standard for MobileFaceNet)
+    desired_left_eye = (0.35, 0.35)
+    desired_right_eye = (0.65, 0.35)
+    desired_dist = (desired_right_eye[0] - desired_left_eye[0]) * 112
+    actual_dist = np.sqrt(dx**2 + dy**2)
+
+    if actual_dist < 1:
+        return None  # eyes too close together, bad detection
+
+    scale = desired_dist / actual_dist
+
+    # Affine rotation matrix around eye center
+    M = cv2.getRotationMatrix2D(eye_center, angle, scale)
+    # Adjust translation so eyes land at desired positions
+    M[0, 2] += (112 * 0.5 - eye_center[0])
+    M[1, 2] += (112 * desired_left_eye[1] - eye_center[1])
+
+    aligned = cv2.warpAffine(frame, M, (112, 112), flags=cv2.INTER_LINEAR)
+    # Convert BGR to RGB
+    aligned_rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
+    return aligned_rgb
+
+def compute_face_embedding(frame, detection):
+    """Compute 128-d face embedding using aligned face + MobileFaceNet ONNX."""
+    session = _get_face_session()
+    if session is None:
+        return None
+
+    aligned = _align_face(frame, detection)
+    if aligned is None:
+        return None
+
+    # Preprocess: normalize to [-1, 1], shape (1, 3, 112, 112)
+    img = aligned.astype(np.float32) / 127.5 - 1.0
+    img = np.transpose(img, (2, 0, 1))  # HWC → CHW
+    img = np.expand_dims(img, axis=0)    # add batch dim
+
+    # Run inference
+    input_name = session.get_inputs()[0].name
+    output = session.run(None, {input_name: img})[0][0]
+
+    # L2-normalize for cosine similarity
+    norm = np.linalg.norm(output)
+    if norm > 0:
+        output = output / norm
+
+    return output.tolist()
+
+def _cosine_similarity(a, b):
+    """Cosine similarity between two L2-normalized vectors (= dot product)."""
+    return float(np.dot(a, b))
+
 def register_face(name: str, frame):
-    """Register a face using dlib's 128-dimensional face encoding."""
+    """Register a face using MediaPipe detection + MobileFaceNet embedding."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    locations = face_recognition.face_locations(rgb, model="hog")
-    if len(locations) == 0:
+    results = _face_detector.process(rgb)
+    if not results.detections:
         return False
 
-    # Pick the largest face
-    largest = max(locations, key=lambda r: (r[2] - r[0]) * (r[1] - r[3]))
-    encodings = face_recognition.face_encodings(rgb, [largest])
-    if len(encodings) == 0:
+    # Pick the largest face by bounding box area
+    h, w = frame.shape[:2]
+    def bbox_area(det):
+        bb = det.location_data.relative_bounding_box
+        return bb.width * bb.height
+    largest_det = max(results.detections, key=bbox_area)
+
+    embedding = compute_face_embedding(frame, largest_det)
+    if embedding is None:
         return False
 
-    encoding = encodings[0]
-
-    # Save face image
-    top, right, bottom, left = largest
-    pad = int(0.2 * (bottom - top))
-    y1 = max(0, top - pad)
-    y2 = min(frame.shape[0], bottom + pad)
-    x1 = max(0, left - pad)
-    x2 = min(frame.shape[1], right + pad)
-    face_img = frame[y1:y2, x1:x2]
+    # Save face image (with padding)
+    bbox = largest_det.location_data.relative_bounding_box
+    x1 = max(0, int(bbox.xmin * w))
+    y1 = max(0, int(bbox.ymin * h))
+    x2 = min(w, int((bbox.xmin + bbox.width) * w))
+    y2 = min(h, int((bbox.ymin + bbox.height) * h))
+    pad = int(0.2 * (y2 - y1))
+    fy1 = max(0, y1 - pad)
+    fy2 = min(h, y2 + pad)
+    fx1 = max(0, x1 - pad)
+    fx2 = min(w, x2 + pad)
+    face_img = frame[fy1:fy2, fx1:fx2]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{name}_{timestamp}.jpg"
@@ -336,50 +503,60 @@ def register_face(name: str, frame):
     db[name].append(filepath)
     save_faces_db(db)
 
-    # Save 128-d encoding
+    # Save 128-d MobileFaceNet embedding
     enc_db = load_encodings_db()
     if name not in enc_db:
         enc_db[name] = []
-    enc_db[name].append(encoding.tolist())
+    enc_db[name].append(embedding)
     save_encodings_db(enc_db)
 
     # Save face registration to RAG memory
     save_to_memory(f"Register face: {name}", f"Learned to recognize {name}", filepath)
 
-    print(f"[FACE] Registered '{name}' with dlib encoding ({filename})")
+    print(f"[FACE] Registered '{name}' with MobileFaceNet embedding ({filename})")
     return True
 
 def recognize_faces(frame) -> list[str]:
-    """Recognize faces using dlib's 128-d encodings (compares facial geometry)."""
+    """Recognize faces using MediaPipe detection + MobileFaceNet cosine similarity."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    locations = face_recognition.face_locations(rgb, model="hog")
-    if len(locations) == 0:
+    results = _face_detector.process(rgb)
+    if not results.detections:
         return []
 
     enc_db = load_encodings_db()
     if not enc_db:
         return []
 
-    # Build arrays of known encodings and names
-    known_encodings = []
+    # Build arrays of known embeddings and names
+    known_embeddings = []
     known_names = []
     for name, encs in enc_db.items():
         for enc in encs:
-            known_encodings.append(np.array(enc))
+            known_embeddings.append(np.array(enc, dtype=np.float32))
             known_names.append(name)
 
-    if not known_encodings:
+    if not known_embeddings:
         return []
 
-    # Get encodings for all faces in the current frame
-    frame_encodings = face_recognition.face_encodings(rgb, locations)
-
     recognized = []
-    for encoding in frame_encodings:
-        distances = face_recognition.face_distance(known_encodings, encoding)
-        best_idx = np.argmin(distances)
-        if distances[best_idx] < 0.6:  # threshold (lower = stricter)
-            recognized.append(known_names[best_idx])
+    for detection in results.detections:
+        embedding = compute_face_embedding(frame, detection)
+        if embedding is None:
+            continue
+
+        emb_arr = np.array(embedding, dtype=np.float32)
+        best_sim = -1.0
+        best_name = None
+
+        for known_emb, known_name in zip(known_embeddings, known_names):
+            sim = _cosine_similarity(emb_arr, known_emb)
+            if sim > best_sim:
+                best_sim = sim
+                best_name = known_name
+
+        if best_name and best_sim >= FACE_MATCH_THRESHOLD:
+            recognized.append(best_name)
+            print(f"[FACE] Recognized {best_name} (similarity: {best_sim:.3f})")
 
     return recognized
 
@@ -420,9 +597,164 @@ def lookup_barcode_product(barcode_data: str) -> str:
         return f"I found a barcode: {barcode_data}, but couldn't look up the product."
 
 # ---------------------------------------------------------------------------
-# Webcam
+# Jetson Object Detection — HTTP client (runs in own daemon thread)
 # ---------------------------------------------------------------------------
-camera = cv2.VideoCapture(1)  # external USB webcam
+JETSON_URL = os.getenv("JETSON_URL", "http://jetson.local:5000")
+JETSON_ENABLED = os.getenv("JETSON_ENABLED", "false").lower() == "true"
+JETSON_TIMEOUT = 2.0  # seconds
+JETSON_INTERVAL = 1.0  # seconds between detection queries
+DEFAULT_QP = [0, 0, 0, 0, 0]
+
+# Thread-safe storage for latest detections
+_detections_lock = threading.Lock()
+latest_detections = []
+latest_quadrant_presence = DEFAULT_QP.copy()
+
+_jetson_session = http_requests.Session()
+
+def send_frame_to_jetson(frame):
+    """Send a frame to the Jetson for object detection. Returns (detections, quadrant_presence)."""
+    try:
+        ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            return [], DEFAULT_QP.copy()
+        jpg_bytes = buffer.tobytes()
+
+        response = _jetson_session.post(
+            f"{JETSON_URL}/detect",
+            files={"frame": ("frame.jpg", jpg_bytes, "image/jpeg")},
+            timeout=JETSON_TIMEOUT,
+        )
+        response.raise_for_status()
+        try:
+            data = response.json()
+        except ValueError:
+            # Jetson returned non-JSON (HTML error page, empty body, etc.)
+            return [], DEFAULT_QP.copy()
+
+        return (
+            data.get("detections", []) or [],
+            data.get("quadrant_presence", DEFAULT_QP) or DEFAULT_QP.copy(),
+        )
+    except http_requests.RequestException:
+        return [], DEFAULT_QP.copy()
+
+def jetson_worker():
+    """Daemon thread: polls Jetson every JETSON_INTERVAL seconds, triggers motors."""
+    global latest_detections, latest_quadrant_presence
+    while True:
+        if not JETSON_ENABLED:
+            stop_all_motors()
+            with _detections_lock:
+                latest_detections = []
+                latest_quadrant_presence = DEFAULT_QP.copy()
+            time.sleep(JETSON_INTERVAL)
+            continue
+
+        frame = get_latest_frame()
+        # MVP fail-safe: if camera feed is missing, don't leave motors buzzing.
+        if frame is None:
+            stop_all_motors()
+            with _detections_lock:
+                latest_detections = []
+                latest_quadrant_presence = DEFAULT_QP.copy()
+            time.sleep(JETSON_INTERVAL)
+            continue
+
+        detections, qp = send_frame_to_jetson(frame)
+        with _detections_lock:
+            latest_detections = detections
+            latest_quadrant_presence = qp if isinstance(qp, list) else DEFAULT_QP.copy()
+        if detections:
+            trigger_vibration(latest_quadrant_presence)
+        else:
+            stop_all_motors()
+        time.sleep(JETSON_INTERVAL)
+
+def get_detection_summary() -> str:
+    """Format latest Jetson detections as text for LLM context."""
+    with _detections_lock:
+        dets = list(latest_detections)
+    if not dets:
+        return ""
+    parts = []
+    for d in dets[:5]:
+        name = d.get("class_name", "unknown")
+        quad = d.get("quadrant", d.get("position", "?"))
+        dm = d.get("distance_m", None)
+        dist = "unknown distance"
+        if dm is not None:
+            try:
+                dist = f"{float(dm):.1f}m"
+            except (TypeError, ValueError):
+                pass
+        parts.append(f"{name} ({quad}, {dist}, {d.get('distance_zone', '?')})")
+    return "Nearby objects detected by sensors: " + ", ".join(parts)
+
+# ---------------------------------------------------------------------------
+# Vibration Motors — GPIO control (Raspberry Pi only)
+# ---------------------------------------------------------------------------
+QUADRANT_TO_MOTOR = ["left", "left-center", "center", "right-center", "right"]
+MOTOR_PINS = {
+    "left": 17,
+    "left-center": 27,
+    "center": 22,
+    "right-center": 23,
+    "right": 24,
+}
+
+motors = {}
+if HAS_GPIO:
+    for zone, pin in MOTOR_PINS.items():
+        try:
+            motors[zone] = PWMOutputDevice(pin, frequency=200)
+        except Exception as e:
+            print(f"[GPIO WARNING] Could not init motor on pin {pin}: {e}")
+
+def trigger_vibration(quadrant_presence):
+    """Map 5 quadrant_presence scores (0-100) to PWM duty cycle for each motor."""
+    if not HAS_GPIO or not motors:
+        return
+    for i, zone in enumerate(QUADRANT_TO_MOTOR):
+        if zone in motors and i < len(quadrant_presence):
+            try:
+                v = float(quadrant_presence[i])
+            except (TypeError, ValueError):
+                v = 0.0
+            motors[zone].value = max(0.0, min(1.0, v / 100.0))
+
+def stop_all_motors():
+    """Turn off all vibration motors."""
+    if not HAS_GPIO:
+        return
+    for motor in motors.values():
+        motor.value = 0.0
+
+def cleanup_motors():
+    """Clean up GPIO on shutdown."""
+    if not HAS_GPIO:
+        return
+    for motor in motors.values():
+        motor.close()
+
+# ---------------------------------------------------------------------------
+# Webcam — auto-detect camera index
+# ---------------------------------------------------------------------------
+def find_camera(preferred_indices=(0, 1, 2)):
+    """Try multiple camera indices and return the first working one."""
+    for idx in preferred_indices:
+        cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                print(f"[CAMERA] Found working camera at index {idx}")
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                return cap
+            cap.release()
+    return None
+
+camera = find_camera()
 frame_lock = threading.Lock()
 latest_frame = None
 
@@ -448,7 +780,7 @@ def capture_frame_b64() -> str | None:
     return base64.b64encode(buffer).decode("utf-8")
 
 # ---------------------------------------------------------------------------
-# Vision analysis via GPT-4o + RAG context
+# Vision analysis via GPT-5-mini + RAG context (Responses API)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     "You are Vera, an AI vision assistant built into smart glasses worn by a blind user. "
@@ -482,30 +814,33 @@ def analyze_image(command: str) -> str:
     # RAG: search past memory for relevant context
     rag_context = search_memory(command)
     system = SYSTEM_PROMPT
+
+    # Add Jetson object detection context (spatial awareness from sensors)
+    detection_summary = get_detection_summary()
+    if detection_summary:
+        system += "\n\n" + detection_summary
+
     if rag_context:
         system += "\n\nRelevant past interactions:\n" + rag_context
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=150,
-        messages=[
-            {"role": "system", "content": system},
+    response = client.responses.create(
+        model="gpt-5-mini",
+        instructions=system,
+        max_output_tokens=400,
+        input=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "input_text", "text": prompt},
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_b64}",
-                            "detail": "low",
-                        },
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{image_b64}",
                     },
                 ],
             },
         ],
     )
-    result = response.choices[0].message.content
+    result = response.output_text or "Sorry, I couldn't process that."
 
     # Save snapshot + interaction to RAG memory
     image_path = ""
@@ -553,15 +888,13 @@ def handle_command(command: str):
         # Summarize if too long for speech
         if len(results) > 500:
             try:
-                summary = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    max_tokens=200,
-                    messages=[
-                        {"role": "system", "content": "Summarize this research into 2-4 clear sentences for a blind user listening via text-to-speech. Be specific with key facts."},
-                        {"role": "user", "content": results},
-                    ],
+                summary = client.responses.create(
+                    model="gpt-5-mini",
+                    instructions="Summarize this research into 2-4 clear sentences for a blind user listening via text-to-speech. Be specific with key facts.",
+                    max_output_tokens=400,
+                    input=results,
                 )
-                results = summary.choices[0].message.content
+                results = summary.output_text or results[:500]
             except Exception:
                 results = results[:500]
         add_to_history("user", command)
@@ -791,6 +1124,9 @@ def handle_command(command: str):
                 "Be concise and natural, like a helpful friend. Speak from the user's perspective. "
                 "If the user asks a follow-up question, use conversation history for context."
             )
+            detection_summary = get_detection_summary()
+            if detection_summary:
+                system += "\n\n" + detection_summary
             if rag_context:
                 system += "\n\nRelevant past interactions:\n" + rag_context
 
@@ -807,18 +1143,16 @@ def handle_command(command: str):
             result = response.choices[0].message.content
         except Exception as e:
             print(f"[PERPLEXITY ERROR] {e}")
-            # Fallback to GPT-4o-mini with conversation history
-            messages = [
-                {"role": "system", "content": "You are Vera, an AI assistant built into smart glasses for a blind user. Answer in 1-3 short sentences. Speak from the user's perspective."},
-            ]
-            messages.extend(get_history_messages())
-            messages.append({"role": "user", "content": command})
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                max_tokens=150,
-                messages=messages,
+            # Fallback to GPT-5-mini with conversation history
+            input_messages = list(get_history_messages())
+            input_messages.append({"role": "user", "content": command})
+            response = client.responses.create(
+                model="gpt-5-mini",
+                instructions="You are Vera, an AI assistant built into smart glasses for a blind user. Answer in 1-3 short sentences. Speak from the user's perspective.",
+                max_output_tokens=400,
+                input=input_messages,
             )
-            result = response.choices[0].message.content
+            result = response.output_text or "Sorry, I couldn't process that."
         save_to_memory(command, result)
 
     # Track conversation for follow-ups
@@ -954,15 +1288,25 @@ def main():
         print("[ERROR] Set your OPENAI_API_KEY in the .env file first!")
         sys.exit(1)
 
-    if not camera.isOpened():
+    if camera is None or not camera.isOpened():
         print("[ERROR] Cannot open webcam. Check that it is connected.")
         sys.exit(1)
 
+    print(f"[PLATFORM] {'Raspberry Pi' if IS_PI else platform.system()} | "
+          f"{'Headless' if HEADLESS else 'Desktop'} | "
+          f"GPIO: {'Active' if HAS_GPIO else 'Not available'}")
+    if JETSON_ENABLED:
+        print(f"[JETSON] Enabled at {JETSON_URL}")
     print(f"[RAG] Memory has {memory_collection.count()} stored interactions.")
 
     # Start TTS worker thread
     tts = threading.Thread(target=tts_worker, daemon=True)
     tts.start()
+
+    # Start Jetson worker thread (if enabled)
+    if JETSON_ENABLED:
+        jetson_thread = threading.Thread(target=jetson_worker, daemon=True)
+        jetson_thread.start()
 
     speak("Vera is ready. Just say Hey Vera whenever you need me.")
 
@@ -970,23 +1314,38 @@ def main():
     voice = threading.Thread(target=listen_thread, daemon=True)
     voice.start()
 
-    # Main thread: webcam preview
-    print("[PREVIEW] Webcam window open. Press 'q' in the window to quit.")
+    # Main thread: frame capture + optional preview
+    if not HEADLESS:
+        print("[PREVIEW] Webcam window open. Press 'q' in the window to quit.")
+    else:
+        print("[HEADLESS] Running without display. Press Ctrl+C to quit.")
     try:
         while True:
             update_frame()
-            with frame_lock:
-                if latest_frame is not None:
-                    cv2.imshow("Vision Assistant - Webcam", latest_frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                print("\n[EXIT] Goodbye!")
-                break
+            if not HEADLESS:
+                with frame_lock:
+                    if latest_frame is not None:
+                        cv2.imshow("Vera — Webcam", latest_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    print("\n[EXIT] Goodbye!")
+                    break
+            else:
+                time.sleep(0.033)  # ~30fps capture rate
+    except KeyboardInterrupt:
+        print("\n[EXIT] Goodbye!")
     finally:
         camera.release()
-        cv2.destroyAllWindows()
-        print("[CLEANUP] Camera released.")
+        if not HEADLESS:
+            cv2.destroyAllWindows()
+        if HAS_GPIO:
+            cleanup_motors()
+        if os.path.exists(TEMP_AUDIO):
+            try:
+                os.remove(TEMP_AUDIO)
+            except OSError:
+                pass
+        print("[CLEANUP] Done.")
 
 if __name__ == "__main__":
     main()
