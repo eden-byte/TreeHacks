@@ -18,8 +18,6 @@ An AI-native assistive vision system that provides:
 - **Medical Integration**: Medication safety checking and vitals monitoring
 - **Cloud-Native Scale**: Scalable architecture using Modal sandboxes
 
-## Key Capabilities
-
 ## Architecture
 
 ### System Overview
