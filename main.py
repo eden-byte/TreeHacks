@@ -15,7 +15,7 @@ import speech_recognition as sr
 from openai import OpenAI
 from dotenv import load_dotenv
 import chromadb
-import mediapipe as mp
+# Face detection: OpenCV YuNet (replaces MediaPipe which lacks ARM64 wheels)
 import onnxruntime as ort
 import requests as http_requests
 from pyzbar.pyzbar import decode as decode_barcodes
@@ -323,12 +323,21 @@ ENCODINGS_FILE = os.path.join(BASE_DIR, "face_encodings.json")
 MOBILEFACENET_PATH = os.path.join(BASE_DIR, "mobilefacenet.onnx")
 FACE_MATCH_THRESHOLD = 0.5  # cosine similarity (higher = stricter)
 
-# MediaPipe face detector (short-range, optimized for ARM)
-_mp_face_detection = mp.solutions.face_detection
-_face_detector = _mp_face_detection.FaceDetection(
-    model_selection=0,  # 0=short-range (<2m), 1=long-range (<5m)
-    min_detection_confidence=0.5,
-)
+# OpenCV YuNet face detector (works on ARM64, no extra deps)
+_yunet_model_path = os.path.join(BASE_DIR, "face_detection_yunet_2023mar.onnx")
+_face_detector = None
+def _get_face_detector(width=640, height=480):
+    global _face_detector
+    if _face_detector is None:
+        if not os.path.exists(_yunet_model_path):
+            # Auto-download YuNet model (~223KB)
+            import urllib.request
+            _yunet_url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+            print("[FACE] Downloading YuNet face detection model...")
+            urllib.request.urlretrieve(_yunet_url, _yunet_model_path)
+            print("[FACE] YuNet model downloaded.")
+        _face_detector = cv2.FaceDetectorYN.create(_yunet_model_path, "", (width, height), 0.5, 0.3, 5000)
+    return _face_detector
 
 # MobileFaceNet ONNX session (loaded lazily)
 _face_embedding_session = None
@@ -375,30 +384,31 @@ def save_encodings_db(db: dict):
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 def detect_faces(frame):
-    """Detect face locations using MediaPipe. Returns list of (top, right, bottom, left)."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = _face_detector.process(rgb)
-    if not results.detections:
+    """Detect face locations using OpenCV YuNet. Returns list of (top, right, bottom, left)."""
+    h, w = frame.shape[:2]
+    detector = _get_face_detector(w, h)
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(frame)
+    if faces is None:
         return []
 
-    h, w = frame.shape[:2]
     locations = []
-    for detection in results.detections:
-        bbox = detection.location_data.relative_bounding_box
-        x1 = max(0, int(bbox.xmin * w))
-        y1 = max(0, int(bbox.ymin * h))
-        x2 = min(w, int((bbox.xmin + bbox.width) * w))
-        y2 = min(h, int((bbox.ymin + bbox.height) * h))
+    for face in faces:
+        x1 = max(0, int(face[0]))
+        y1 = max(0, int(face[1]))
+        x2 = min(w, int(face[0] + face[2]))
+        y2 = min(h, int(face[1] + face[3]))
         locations.append((y1, x2, y2, x1))  # (top, right, bottom, left) — same format as dlib
     return locations
 
-def _align_face(frame, detection):
-    """Align a face using MediaPipe eye keypoints + affine transform → 112x112 RGB."""
-    h, w = frame.shape[:2]
-    kps = detection.location_data.relative_keypoints
-    # MediaPipe keypoint indices: 0=right_eye, 1=left_eye
-    left_eye = (int(kps[1].x * w), int(kps[1].y * h))
-    right_eye = (int(kps[0].x * w), int(kps[0].y * h))
+def _align_face(frame, face):
+    """Align a face using YuNet eye keypoints + affine transform → 112x112 RGB.
+
+    YuNet face array: [x, y, w, h, right_eye_x, right_eye_y, left_eye_x, left_eye_y, nose_x, nose_y, ...]
+    """
+    # YuNet keypoints: indices 4,5 = right eye; 6,7 = left eye
+    right_eye = (int(face[4]), int(face[5]))
+    left_eye = (int(face[6]), int(face[7]))
 
     # Compute angle between eyes
     dx = right_eye[0] - left_eye[0]
@@ -430,13 +440,13 @@ def _align_face(frame, detection):
     aligned_rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
     return aligned_rgb
 
-def compute_face_embedding(frame, detection):
+def compute_face_embedding(frame, face):
     """Compute 128-d face embedding using aligned face + MobileFaceNet ONNX."""
     session = _get_face_session()
     if session is None:
         return None
 
-    aligned = _align_face(frame, detection)
+    aligned = _align_face(frame, face)
     if aligned is None:
         return None
 
@@ -461,29 +471,28 @@ def _cosine_similarity(a, b):
     return float(np.dot(a, b))
 
 def register_face(name: str, frame):
-    """Register a face using MediaPipe detection + MobileFaceNet embedding."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = _face_detector.process(rgb)
-    if not results.detections:
+    """Register a face using YuNet detection + MobileFaceNet embedding."""
+    h, w = frame.shape[:2]
+    detector = _get_face_detector(w, h)
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(frame)
+    if faces is None or len(faces) == 0:
         return False
 
     # Pick the largest face by bounding box area
-    h, w = frame.shape[:2]
-    def bbox_area(det):
-        bb = det.location_data.relative_bounding_box
-        return bb.width * bb.height
-    largest_det = max(results.detections, key=bbox_area)
+    def bbox_area(f):
+        return f[2] * f[3]
+    largest_face = max(faces, key=bbox_area)
 
-    embedding = compute_face_embedding(frame, largest_det)
+    embedding = compute_face_embedding(frame, largest_face)
     if embedding is None:
         return False
 
     # Save face image (with padding)
-    bbox = largest_det.location_data.relative_bounding_box
-    x1 = max(0, int(bbox.xmin * w))
-    y1 = max(0, int(bbox.ymin * h))
-    x2 = min(w, int((bbox.xmin + bbox.width) * w))
-    y2 = min(h, int((bbox.ymin + bbox.height) * h))
+    x1 = max(0, int(largest_face[0]))
+    y1 = max(0, int(largest_face[1]))
+    x2 = min(w, int(largest_face[0] + largest_face[2]))
+    y2 = min(h, int(largest_face[1] + largest_face[3]))
     pad = int(0.2 * (y2 - y1))
     fy1 = max(0, y1 - pad)
     fy2 = min(h, y2 + pad)
@@ -517,10 +526,12 @@ def register_face(name: str, frame):
     return True
 
 def recognize_faces(frame) -> list[str]:
-    """Recognize faces using MediaPipe detection + MobileFaceNet cosine similarity."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = _face_detector.process(rgb)
-    if not results.detections:
+    """Recognize faces using YuNet detection + MobileFaceNet cosine similarity."""
+    h, w = frame.shape[:2]
+    detector = _get_face_detector(w, h)
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(frame)
+    if faces is None or len(faces) == 0:
         return []
 
     enc_db = load_encodings_db()
@@ -539,8 +550,8 @@ def recognize_faces(frame) -> list[str]:
         return []
 
     recognized = []
-    for detection in results.detections:
-        embedding = compute_face_embedding(frame, detection)
+    for face in faces:
+        embedding = compute_face_embedding(frame, face)
         if embedding is None:
             continue
 
@@ -599,7 +610,7 @@ def lookup_barcode_product(barcode_data: str) -> str:
 # ---------------------------------------------------------------------------
 # Jetson Object Detection — HTTP client (runs in own daemon thread)
 # ---------------------------------------------------------------------------
-JETSON_URL = os.getenv("JETSON_URL", "http://jetson.local:5000")
+JETSON_URL = os.getenv("JETSON_URL", "http://192.168.50.2:5000")
 JETSON_ENABLED = os.getenv("JETSON_ENABLED", "false").lower() == "true"
 JETSON_TIMEOUT = 2.0  # seconds
 JETSON_INTERVAL = 1.0  # seconds between detection queries

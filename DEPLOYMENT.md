@@ -57,15 +57,15 @@ ping <jetson-ip>
 
 ## 2. Jetson Orin Nano Setup
 
-### 2a. Clone the repo
+### 2a. Clone the repo (computerVision branch)
 ```bash
-git clone <your-repo-url> ~/vera
+git clone -b computerVision <your-repo-url> ~/vera
 cd ~/vera
 ```
 
 ### 2b. Install dependencies
 ```bash
-pip install -r requirements-jetson.txt
+pip install -r requirements.txt
 ```
 
 If using GPU-accelerated PyTorch on Jetson, follow NVIDIA's official PyTorch wheel instructions for your JetPack version instead of the pip torch package.
@@ -79,65 +79,11 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov5n.pt
 wget https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt
 ```
 
-### 2d. Create config.yaml
+### 2d. Config and detector
 
-The Jetson server expects a `config.yaml`. Create one:
+The `config.yaml` and `src/detector.py` are already included in the `computerVision` branch. Edit `config.yaml` if you need to change YOLO weights, device, or detection parameters.
 
-```yaml
-model:
-  weights: "yolov5n.pt"        # or yolov8n.pt
-  device: "auto"                # "auto" picks CUDA if available
-  confidence_threshold: 0.4
-  iou_threshold: 0.45
-  img_size: 640
-
-camera:
-  vertical_fov_deg: 55
-  horizontal_fov_deg: 70
-
-detection:
-  path_width_m: 0.6
-  close_distance_m: 1.5
-  close_bbox_fraction: 0.45
-  priority_classes:
-    - person
-    - car
-    - bicycle
-    - motorcycle
-    - bus
-    - truck
-    - dog
-    - cat
-    - chair
-    - bench
-    - stop sign
-    - fire hydrant
-    - backpack
-    - umbrella
-    - bottle
-    - cup
-    - door               # custom class if your model supports it
-  distance_zones:
-    danger: 0.15          # bbox > 15% of frame area
-    warning: 0.05         # bbox > 5% of frame area
-
-depth:
-  enabled: false          # set true if you have a depth model ONNX
-  run_every_n_frames: 2
-```
-
-### 2e. Create src/detector.py
-
-The Jetson server imports `DetectorUtils` and `DepthEstimator` from `src/detector.py`. If you don't have this file yet, you need it. At minimum it needs:
-- `DetectorUtils.estimate_distance(bbox, frame_shape, ...)`
-- `DetectorUtils.is_in_walking_path(...)`
-- `DetectorUtils.collision_probability(...)`
-- `DetectorUtils.get_quadrant(...)`
-- `DetectorUtils.get_quadrant_overlap(...)`
-- `DetectorUtils.get_primary_quadrants(...)`
-- `DepthEstimator` class (only if `depth.enabled: true`)
-
-### 2f. Start the detection server
+### 2e. Start the detection server
 ```bash
 python jetson_server.py --config config.yaml --port 5000 --host 0.0.0.0
 ```
@@ -156,9 +102,9 @@ Expected response:
 
 ## 3. Raspberry Pi Setup
 
-### 3a. Clone the repo
+### 3a. Clone the repo (master branch)
 ```bash
-git clone <your-repo-url> ~/vera
+git clone -b master <your-repo-url> ~/vera
 cd ~/vera
 ```
 

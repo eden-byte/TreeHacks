@@ -15,7 +15,6 @@ sudo apt install -y \
     mpg123 \
     espeak \
     flac \
-    libatlas-base-dev \
     libopenblas-dev
 
 # Create venv (--system-site-packages so apt-installed opencv is visible)
@@ -58,7 +57,6 @@ else:
         print('[WARNING] No camera detected')
 "
 
-python3 -c "import mediapipe; print(f'MediaPipe {mediapipe.__version__} OK')"
 python3 -c "import onnxruntime; print(f'ONNX Runtime {onnxruntime.__version__} OK')"
 python3 -c "from gpiozero import Device; print('GPIO OK')" 2>/dev/null || echo "[INFO] GPIO not available (expected on non-Pi)"
 python3 -c "import speech_recognition as sr; print(f'SpeechRecognition {sr.__version__} OK')"
@@ -70,5 +68,5 @@ echo ""
 echo "Don't forget to set up your .env file:"
 echo "  OPENAI_API_KEY=sk-..."
 echo "  PERPLEXITY_API_KEY=pplx-..."
-echo "  JETSON_URL=http://jetson.local:5000"
+echo "  JETSON_URL=http://192.168.50.2:5000"
 echo "  JETSON_ENABLED=true"
